@@ -1038,9 +1038,9 @@ class ALNS:
         """
         # --- 1. 定义各分量的权重 ---
         W_LINK_TIME = 10  # 主要目标
-        W_IMPROVEMENT = 1.5  # 对改善内部和外部冲突的综合奖励
-        W_STRUCTURE = 0.3  # 对改善解结构的奖励（效率和多样性）
-        W_BOUNDARY = 0
+        # W_IMPROVEMENT = 1.5  # 对改善内部和外部冲突的综合奖励
+        # W_STRUCTURE = 0.3  # 对改善解结构的奖励（效率和多样性）
+        # W_BOUNDARY = 0
 
         # --- 2. 计算主要目标奖励 (Link Time) ---
         link_time_change = new_solution.link_time - prev_solution.link_time

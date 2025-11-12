@@ -21,10 +21,10 @@ epsilon_min: 0.01
 fedprox_mu: 0.01  # FedProx的mu值，推荐范围 0.001 到 0.1，可以从0.01开始尝试
 
 gamma: 0.99
-#high_quality_threshold: 1.0
+high_quality_threshold: 1.0
 
 learning_rate: 0.001
 log_dir: runs/vision/hash_state0
-#phi: 0.95
-#process_timeout: 600
-#barrier_timeout: 300
+phi: 0.95
+process_timeout: 600
+barrier_timeout: 300

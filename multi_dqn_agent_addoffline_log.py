@@ -582,10 +582,10 @@ class ParallelDQNAgent:
             # Get Q-values for each action combination
             q_values_np = q_values.cpu().numpy().flatten()
 
-            # Get joint action with highest Q-value
-            action_id = np.argmax(q_values_np)
-            destroy_id = action_id // self.n_repair_actions
-            repair_id = action_id % self.n_repair_actions
+            # # Get joint action with highest Q-value
+            # action_id = np.argmax(q_values_np)
+            # destroy_id = action_id // self.n_repair_actions
+            # repair_id = action_id % self.n_repair_actions
 
             # Softmax采样（替换ε-greedy）
             q_norm = q_values_np - np.max(q_values_np)

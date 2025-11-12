@@ -119,7 +119,7 @@ def run_experiment(config_path, repetitions=3):
         
         try:
             # 【修改】运行fixed_main2.py而不是fixed-main.py
-            subprocess.run(['python', 'fixed_main2.py'], check=True)
+            subprocess.run(['python', 'fixed_main2_addoffline_log.py'], check=True)
             
             # Extract results from output file
             # 【修改】适配新的输出文件名（来自fixed_main2.py）
@@ -450,7 +450,7 @@ def generate_summary_report(all_results, output_dir):
     </head>
     <body>
         <h1>Fixed Main2 Experiment Summary Report</h1>
-        <p>This report covers experiments using the improved continuous training with VAE (fixed_main2.py)</p>
+        <p>This report covers experiments using the improved continuous training with VAE (fixed_main2_addoffline_log.py.py)</p>
     """
     
     # Add summary statistics table if we have valid results
@@ -576,11 +576,11 @@ def main():
     parser = argparse.ArgumentParser(description='Run parameter sweep experiments for fixed_main2')
     parser.add_argument('--base-config', type=str, default='args.yaml',
                         help='Path to base configuration file')
-    parser.add_argument('--output-dir', type=str, default='experiment_results_main2',
+    parser.add_argument('--output-dir', type=str, default='experiment_results',
                         help='Directory to save results')
-    parser.add_argument('--repetitions', type=int, default=3,
+    parser.add_argument('--repetitions', type=int, default=1,
                         help='Number of repetitions for each configuration')
-    parser.add_argument('--param-file', type=str, default=None,
+    parser.add_argument('--param-file', type=str, default='args_param2.yaml',
                         help='Path to a YAML file containing parameter combinations to explore')
     args = parser.parse_args()
     

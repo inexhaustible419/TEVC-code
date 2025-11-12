@@ -1,0 +1,30 @@
+# Example parameter combinations for experiments
+# This file defines which parameters to vary across experiments
+
+# Time limits to test
+set_time: [6000]  # 12min, 60min
+
+#Datasets
+data: [C1] #C2, C3, C4, C5, C6, W1, W2, W3, W4, W5, W6
+#数据分组 推荐2-12
+fragments: [8]
+# ALNS parameters
+iter_num: [5]
+it_num: [5]
+epochs: [5]
+q: [50]
+
+# Reward weights
+weight1: [ 1.0]  # Reward weight
+weight2: [ 0]  # Penalty quantity weight
+weight3: [ 0]  # Penalty time weight
+
+# DQN parameters
+learning_rate: [0.001]
+epsilon_decay: [0.9]
+batch_size: [128]
+epsilon: [1.0]
+epsilon_min: [0.01]
+phi: [0.95]
+gamma: [0.99]
+

@@ -1,0 +1,33 @@
+当前程序的脉络整理
+
+state的设计——采用当前方案
+
+dqn训练策略：
+softmax——有待商榷？
+reward后期的惩罚——有待商榷？
+
+周期外：dqn的权重加权平均——有待商榷？
+
+算子设计——采用当前方案
+
+
+****片段划分 (split_fragment): DealData.py 中的 split_fragment 将所有 Arc 对象按数量平均分配到self.model.fragment_list 中的 Fragment 对象里。
+****冲突计算 (find_conf_arc): DealData.py 中的 find_conf_arc 是一个关键的预处理步骤。它通过 $O(N^2)$ 遍历，根据模型中定义的约束（如 ground_trans_time = 340），计算出任意两个 Arc 之间是否存在冲突，并填充每个 Arc 对象的 confArc_list (全局冲突) 和 f_confArc_list (片段内冲突)。
+
+****创建一个“可序列化”的版本。这是后续实现多进程并行的基础。
+****通过 multiprocessing.Manager 创建一个全局共享的字典 blackboard。这个“黑板”用于让各个片段进程在运行时共享它们的边界弧段信息，是实现协同的关键。
+
+iter_num 次（例如5次），代表五轮联邦学习。
+****尝试加载这个路径下的 global_model.pt 文件。在第0轮迭代时，该文件不存在，DQN Agent 会使用随机初始化的权重。在第1轮及之后的迭代中，Agent 会加载上一轮联邦平均后生成的 global_model.pt。
+it_num (例如10次) 的内层循环，即“内部挖掘循环”。
+****这个循环的目的是在 ALNS 搜索之间，利用数据挖掘技术（FP-Growth）来生成更好的初始解。
+
+在 num == 0 时，尝试4种不同的启发式规则（如按链路时间排序、按冲突度排序等）来生成一个高质量的初始解。
+在 num > 0 时，对上一轮搜索产生的精英解集 all_elite_sol 进行频繁项集挖掘，然后调用基于 IP_CON.py利用CPLEX求解器，将挖掘到的频繁模式和剩余弧段组合，生成一个更优的初始解。
+
+程序进入 epochs x q (例如 5x50=250 步) 的主迭代循环。
+****状态向量构成：基础状态 (15维)+解签名特征 (约 50 维):签名使用多种哈希技巧（如MinHash、区间分布、位置敏感哈希、模运算哈希）来描述“当前解选择了哪些弧段”，为DQN提供了更丰富的特征。
+****当 np.random.random() < self.epsilon 时，算法进入“探索”模式。当 np.random.random() >= self.epsilon 时，算法进入“利用”模式。但它并不会简单地选择 Q 值最高的动作 (np.argmax)。引入衰减温度 (Temperature):算法使用这个衰减的温度，通过 Softmax 函数将 Q 值转换为一个概率分布：算法并不选择 argmax，而是根据 probs 概率分布，使用 np.random.choice(..., p=probs) 随机采样一个动作。
+****接受准则 (利用阶段) - 带有随机重启 (Random Restart) 或 扰动 (Perturbation) 机制的严格爬山算法：如果 improvement > 0，解被无条件接受。
+卡住时 (it > fire_threshold)： 算法会切换到“随机扰动”模式，尝试跳出局部最优。如果 fireSol 的 link_time 仍然小于或等于 currentSol，它会被拒绝，it 会继续增加，直到达到 max_it 停止。接受： 无论是在“常规搜索”还是“扰动模式”下，currentSol 永远只会被更优的解替代。
+****从磁盘读取所有片段刚刚保存的本地模型 ( fragment_0.pt, fragment_1.pt, ... )。它逐层累加所有模型的权重，然后除以片段数量，计算出“平均权重”。这个“平均权重”被保存为新的 global_model.pt。

@@ -1,0 +1,107 @@
+改进修正后程序开始时间: 2025-11-12 22:15:36
+Using Python multiprocessing with 20 available CPU cores
+PyTorch version: 1.13.1+cu117
+CUDA available: True
+Processing data file: data/C1.csv
+Initializing original model...
+Creating improved corrected serializable model...
+✓ Serializable model validation passed!
+Improved corrected serializable model created successfully:
+  - Arc count: 23598
+  - Fragment count: 8
+  - Will run 5 continuous it_nums per fragment
+  - Will run 15 continuous iter_nums per fragment
+------------------------------Improved Continuous DQN-LNS start0---------------------------------
+Starting continuous training with barrier synchronization...
+Submitting continuous training task for fragment 0
+Submitting continuous training task for fragment 1
+Submitting continuous training task for fragment 2
+Submitting continuous training task for fragment 3
+Submitting continuous training task for fragment 4
+Submitting continuous training task for fragment 5
+Submitting continuous training task for fragment 6
+Submitting continuous training task for fragment 7
+Waiting for continuous training result from fragment 0...
+✓ Successfully collected continuous training result from fragment 0
+Waiting for continuous training result from fragment 1...
+✓ Successfully collected continuous training result from fragment 1
+Waiting for continuous training result from fragment 2...
+✓ Successfully collected continuous training result from fragment 2
+Waiting for continuous training result from fragment 3...
+✓ Successfully collected continuous training result from fragment 3
+Waiting for continuous training result from fragment 4...
+✓ Successfully collected continuous training result from fragment 4
+Waiting for continuous training result from fragment 5...
+✓ Successfully collected continuous training result from fragment 5
+Waiting for continuous training result from fragment 6...
+✓ Successfully collected continuous training result from fragment 6
+Waiting for continuous training result from fragment 7...
+✓ Successfully collected continuous training result from fragment 7
+✓ Processed continuous training result by it_num 5 from fragment 0: best_link_time = 483567
+✓ Processed continuous training result by it_num 5 from fragment 1: best_link_time = 725663
+✓ Processed continuous training result by it_num 5 from fragment 2: best_link_time = 722185
+✓ Processed continuous training result by it_num 5 from fragment 3: best_link_time = 544476
+✓ Processed continuous training result by it_num 5 from fragment 4: best_link_time = 856137
+✓ Processed continuous training result by it_num 5 from fragment 5: best_link_time = 567854
+✓ Processed continuous training result by it_num 5 from fragment 6: best_link_time = 647348
+✓ Processed continuous training result by it_num 5 from fragment 7: best_link_time = 783724
+Successfully processed 8/8 fragments
+开始全局模型联邦平均...
+新的全局模型已保存至: runs/vision/hash_state0/trained_model/global_model.pt
+------------------------------Improved Continuous DQN-LNS start1---------------------------------
+Starting continuous training with barrier synchronization...
+Submitting continuous training task for fragment 0
+Submitting continuous training task for fragment 1
+Submitting continuous training task for fragment 2
+Submitting continuous training task for fragment 3
+Submitting continuous training task for fragment 4
+Submitting continuous training task for fragment 5
+Submitting continuous training task for fragment 6
+Submitting continuous training task for fragment 7
+Waiting for continuous training result from fragment 0...
+✓ Successfully collected continuous training result from fragment 0
+Waiting for continuous training result from fragment 1...
+✓ Successfully collected continuous training result from fragment 1
+Waiting for continuous training result from fragment 2...
+✓ Successfully collected continuous training result from fragment 2
+Waiting for continuous training result from fragment 3...
+✓ Successfully collected continuous training result from fragment 3
+Waiting for continuous training result from fragment 4...
+✓ Successfully collected continuous training result from fragment 4
+Waiting for continuous training result from fragment 5...
+✓ Successfully collected continuous training result from fragment 5
+Waiting for continuous training result from fragment 6...
+✓ Successfully collected continuous training result from fragment 6
+Waiting for continuous training result from fragment 7...
+✓ Successfully collected continuous training result from fragment 7
+✓ Processed continuous training result by it_num 1 from fragment 0: best_link_time = 483567
+✓ Processed continuous training result by it_num 2 from fragment 1: best_link_time = 725663
+✓ Processed continuous training result by it_num 3 from fragment 2: best_link_time = 722185
+✓ Processed continuous training result by it_num 3 from fragment 3: best_link_time = 545020
+✓ Processed continuous training result by it_num 3 from fragment 4: best_link_time = 856137
+✓ Processed continuous training result by it_num 3 from fragment 5: best_link_time = 567904
+✓ Processed continuous training result by it_num 3 from fragment 6: best_link_time = 647348
+✓ Processed continuous training result by it_num 1 from fragment 7: best_link_time = 783724
+Successfully processed 8/8 fragments
+Combining fragment solutions...
+Fragment 0 contributed 436 arcs, link_time: 483567
+Fragment 1 contributed 675 arcs, link_time: 725663
+Fragment 2 contributed 688 arcs, link_time: 722185
+Fragment 3 contributed 477 arcs, link_time: 545020
+Fragment 4 contributed 835 arcs, link_time: 856137
+Fragment 5 contributed 506 arcs, link_time: 567904
+Fragment 6 contributed 583 arcs, link_time: 647348
+Fragment 7 contributed 776 arcs, link_time: 783724
+Resolving conflicts between fragments...
+✓ Conflict resolution completed successfully
+冲突消解前目标值: 5331548
+冲突消解后目标值: 5126833
+Change after conflict resolution: -3.84%
+Total continuous training time: 3789.72 seconds
+
+--------------------- FINAL RESULTS ---------------------
+Final solution link time: 5126833
+Final solution link count: 4797
+Results summary: [[[5126833], 5126833.0]]
+Timing summary: [[[3789.721426010132], 3789.721426010132]]
+改进修正后程序结束时间: 2025-11-12 23:18:48

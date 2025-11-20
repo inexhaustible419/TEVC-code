@@ -457,80 +457,7 @@ class ParallelDQNAgent:
             self.operator_values = np.ones(len(self.operator_values)) / len(self.operator_values)
 
 
-    # def act(self, state):
-    #     """Select action with epsilon-greedy strategy"""
-    #     # Epsilon-greedy exploration
-    #     if np.random.random() < self.epsilon:
-    #         # Explore: select randomly but with bias toward more promising operators
-    #         if random.random() < 0.5:  # 50% chance of using operator values
-    #             # Use learned operator values to guide exploration
-    #             destroy_values = self.operator_values[:self.n_destroy_actions]
-    #             repair_values = self.operator_values[self.n_destroy_actions:]
-    #
-    #             # Normalize for probability distribution
-    #             # destroy_probs = destroy_values / np.sum(destroy_values) if np.sum(destroy_values) > 0 else None
-    #             # repair_probs = repair_values / np.sum(repair_values) if np.sum(repair_values) > 0 else None
-    #             def safe_prob_normalization(values):
-    #                 """保证计算出的概率分布有效"""
-    #                 # 先将所有值偏移到非负区域
-    #                 shifted = values - np.min(values) + 1e-10
-    #                 # 标准化为概率
-    #                 probs = shifted / np.sum(shifted)
-    #                 # 确保概率之和为1
-    #                 probs = probs / np.sum(probs)
-    #                 return probs
-    #             destroy_probs = safe_prob_normalization(destroy_values)
-    #             repair_probs = safe_prob_normalization(repair_values)
-    #
-    #             # Select based on weighted probabilities or uniform if normalization failed
-    #             if destroy_probs is not None:
-    #                 destroy_id = np.random.choice(self.n_destroy_actions, p=destroy_probs)
-    #             else:
-    #                 destroy_id = random.randint(0, self.n_destroy_actions - 1)
-    #
-    #             if repair_probs is not None:
-    #                 repair_id = np.random.choice(self.n_repair_actions, p=repair_probs)
-    #             else:
-    #                 repair_id = random.randint(0, self.n_repair_actions - 1)
-    #         else:
-    #             # Pure random selection
-    #             destroy_id = random.randint(0, self.n_destroy_actions - 1)
-    #             repair_id = random.randint(0, self.n_repair_actions - 1)
-    #     else:
-    #         # Exploit: select best action according to Q-values
-    #         state_tensor = torch.FloatTensor(state).unsqueeze(0).to(self.device)
-    #         with torch.no_grad():
-    #             q_values = self.model(state_tensor)
-    #             # 【新增】添加记录器
-    #             self._last_q_values = q_values.cpu().numpy().flatten()
-    #             # print(self._last_q_values)
-    #
-    #         # Get Q-values for each action combination
-    #         q_values_np = q_values.cpu().numpy().flatten()
-    #
-    #         # Get joint action with highest Q-value
-    #         action_id = np.argmax(q_values_np)
-    #         destroy_id = action_id // self.n_repair_actions
-    #         repair_id = action_id % self.n_repair_actions
-    #
-    #         # Update operator values for better exploration later
-    #         for d in range(self.n_destroy_actions):
-    #             d_indices = [d * self.n_repair_actions + r for r in range(self.n_repair_actions)]
-    #             self.operator_values[d] = 0.9 * self.operator_values[d] + 0.1 * np.mean(q_values_np[d_indices])
-    #
-    #         for r in range(self.n_repair_actions):
-    #             r_indices = [d * self.n_repair_actions + r for d in range(self.n_destroy_actions)]
-    #             self.operator_values[self.n_destroy_actions + r] = 0.9 * self.operator_values[self.n_destroy_actions + r] + 0.1 * np.mean(q_values_np[r_indices])
-    #
-    #         # 【新增】 缓存算子价值
-    #         self._last_operator_values = self.operator_values.copy()
-    #
-    #         # ✅ 新增：记录选中的action（在所有分支最后统一记录）
-    #         self._last_selected_action_id = action_id#destroy_id * self.n_repair_actions + repair_id
-    #
-    #     return destroy_id, repair_id
-
-    def act(self, state,temperature=1.0):
+    def act(self, state, temperature=1.0):
         """Select action with epsilon-greedy strategy"""
         # Epsilon-greedy exploration
         if np.random.random() < self.epsilon:
@@ -552,7 +479,6 @@ class ParallelDQNAgent:
                     # 确保概率之和为1
                     probs = probs / np.sum(probs)
                     return probs
-
                 destroy_probs = safe_prob_normalization(destroy_values)
                 repair_probs = safe_prob_normalization(repair_values)
 
@@ -582,16 +508,8 @@ class ParallelDQNAgent:
             # Get Q-values for each action combination
             q_values_np = q_values.cpu().numpy().flatten()
 
-            # # Get joint action with highest Q-value
-            # action_id = np.argmax(q_values_np)
-            # destroy_id = action_id // self.n_repair_actions
-            # repair_id = action_id % self.n_repair_actions
-
-            # Softmax采样（替换ε-greedy）
-            q_norm = q_values_np - np.max(q_values_np)
-            exp_q = np.exp(q_norm / temperature)
-            probs = exp_q / np.sum(exp_q)
-            action_id = np.random.choice(len(q_values_np), p=probs)
+            # Get joint action with highest Q-value
+            action_id = np.argmax(q_values_np)
             destroy_id = action_id // self.n_repair_actions
             repair_id = action_id % self.n_repair_actions
 
@@ -602,16 +520,99 @@ class ParallelDQNAgent:
 
             for r in range(self.n_repair_actions):
                 r_indices = [d * self.n_repair_actions + r for d in range(self.n_destroy_actions)]
-                self.operator_values[self.n_destroy_actions + r] = 0.9 * self.operator_values[
-                    self.n_destroy_actions + r] + 0.1 * np.mean(q_values_np[r_indices])
+                self.operator_values[self.n_destroy_actions + r] = 0.9 * self.operator_values[self.n_destroy_actions + r] + 0.1 * np.mean(q_values_np[r_indices])
 
             # 【新增】 缓存算子价值
             self._last_operator_values = self.operator_values.copy()
 
             # ✅ 新增：记录选中的action（在所有分支最后统一记录）
-            self._last_selected_action_id = action_id  # destroy_id * self.n_repair_actions + repair_id
+            self._last_selected_action_id = action_id#destroy_id * self.n_repair_actions + repair_id
 
         return destroy_id, repair_id
+
+    #softmax
+    # def act(self, state,temperature=1.0):
+    #     """Select action with epsilon-greedy strategy"""
+    #     # Epsilon-greedy exploration
+    #     if np.random.random() < self.epsilon:
+    #         # Explore: select randomly but with bias toward more promising operators
+    #         if random.random() < 0.5:  # 50% chance of using operator values
+    #             # Use learned operator values to guide exploration
+    #             destroy_values = self.operator_values[:self.n_destroy_actions]
+    #             repair_values = self.operator_values[self.n_destroy_actions:]
+    #
+    #             # Normalize for probability distribution
+    #             # destroy_probs = destroy_values / np.sum(destroy_values) if np.sum(destroy_values) > 0 else None
+    #             # repair_probs = repair_values / np.sum(repair_values) if np.sum(repair_values) > 0 else None
+    #             def safe_prob_normalization(values):
+    #                 """保证计算出的概率分布有效"""
+    #                 # 先将所有值偏移到非负区域
+    #                 shifted = values - np.min(values) + 1e-10
+    #                 # 标准化为概率
+    #                 probs = shifted / np.sum(shifted)
+    #                 # 确保概率之和为1
+    #                 probs = probs / np.sum(probs)
+    #                 return probs
+    #
+    #             destroy_probs = safe_prob_normalization(destroy_values)
+    #             repair_probs = safe_prob_normalization(repair_values)
+    #
+    #             # Select based on weighted probabilities or uniform if normalization failed
+    #             if destroy_probs is not None:
+    #                 destroy_id = np.random.choice(self.n_destroy_actions, p=destroy_probs)
+    #             else:
+    #                 destroy_id = random.randint(0, self.n_destroy_actions - 1)
+    #
+    #             if repair_probs is not None:
+    #                 repair_id = np.random.choice(self.n_repair_actions, p=repair_probs)
+    #             else:
+    #                 repair_id = random.randint(0, self.n_repair_actions - 1)
+    #         else:
+    #             # Pure random selection
+    #             destroy_id = random.randint(0, self.n_destroy_actions - 1)
+    #             repair_id = random.randint(0, self.n_repair_actions - 1)
+    #     else:
+    #         # Exploit: select best action according to Q-values
+    #         state_tensor = torch.FloatTensor(state).unsqueeze(0).to(self.device)
+    #         with torch.no_grad():
+    #             q_values = self.model(state_tensor)
+    #             # 【新增】添加记录器
+    #             self._last_q_values = q_values.cpu().numpy().flatten()
+    #             # print(self._last_q_values)
+    #
+    #         # Get Q-values for each action combination
+    #         q_values_np = q_values.cpu().numpy().flatten()
+    #
+    #         # # Get joint action with highest Q-value
+    #         # action_id = np.argmax(q_values_np)
+    #         # destroy_id = action_id // self.n_repair_actions
+    #         # repair_id = action_id % self.n_repair_actions
+    #
+    #         # Softmax采样（替换ε-greedy）
+    #         q_norm = q_values_np - np.max(q_values_np)
+    #         exp_q = np.exp(q_norm / temperature)
+    #         probs = exp_q / np.sum(exp_q)
+    #         action_id = np.random.choice(len(q_values_np), p=probs)
+    #         destroy_id = action_id // self.n_repair_actions
+    #         repair_id = action_id % self.n_repair_actions
+    #
+    #         # Update operator values for better exploration later
+    #         for d in range(self.n_destroy_actions):
+    #             d_indices = [d * self.n_repair_actions + r for r in range(self.n_repair_actions)]
+    #             self.operator_values[d] = 0.9 * self.operator_values[d] + 0.1 * np.mean(q_values_np[d_indices])
+    #
+    #         for r in range(self.n_repair_actions):
+    #             r_indices = [d * self.n_repair_actions + r for d in range(self.n_destroy_actions)]
+    #             self.operator_values[self.n_destroy_actions + r] = 0.9 * self.operator_values[
+    #                 self.n_destroy_actions + r] + 0.1 * np.mean(q_values_np[r_indices])
+    #
+    #         # 【新增】 缓存算子价值
+    #         self._last_operator_values = self.operator_values.copy()
+    #
+    #         # ✅ 新增：记录选中的action（在所有分支最后统一记录）
+    #         self._last_selected_action_id = action_id  # destroy_id * self.n_repair_actions + repair_id
+    #
+    #     return destroy_id, repair_id
 
     # 【新增】 新增：获取Q值和算子指标（供ALNS调用）
     def get_metrics_for_logging(self):
@@ -659,65 +660,4 @@ class ParallelDQNAgent:
         # 历史版本的软更新逻辑
         for target_param, local_param in zip(self.target_model.parameters(), self.model.parameters()):
             target_param.data.copy_(tau * local_param.data + (1.0 - tau) * target_param.data)
-
-    # def plot_metrics(self, f_num):
-    #     """Plot training metrics for this agent"""
-    #     if len(self.train_metrics["epsilon"]) < 10:
-    #         return  # Not enough data to plot
-    #
-    #     plt.figure(figsize=(15, 12))
-    #
-    #     # Reward plot
-    #     plt.subplot(3, 2, 1)
-    #     plt.plot(self.train_metrics["reward"])
-    #     plt.title(f"Agent {self.agent_id} - Fragment {f_num} - Reward")
-    #     plt.xlabel("Training Step")
-    #     plt.ylabel("Reward")
-    #
-    #     # Epsilon decay plot
-    #     plt.subplot(3, 2, 2)
-    #     plt.plot(self.train_metrics["epsilon"])
-    #     plt.title(f"Agent {self.agent_id} - Epsilon Decay")
-    #     plt.xlabel("Training Step")
-    #     plt.ylabel("Epsilon")
-    #
-    #     # Loss plot
-    #     plt.subplot(3, 2, 3)
-    #     plt.plot(self.train_metrics["loss"])
-    #     plt.title(f"Agent {self.agent_id} - Loss")
-    #     plt.xlabel("Training Step")
-    #     plt.ylabel("Loss")
-    #
-    #     # Q-value plot
-    #     plt.subplot(3, 2, 4)
-    #     plt.plot(self.train_metrics["avg_q_value"])
-    #     plt.title(f"Agent {self.agent_id} - Avg Q-Value")
-    #     plt.xlabel("Training Step")
-    #     plt.ylabel("Average Q-Value")
-    #
-    #     # Operator values plot
-    #     plt.subplot(3, 2, 6)
-    #     destroy_ops = self.operator_values[:self.n_destroy_actions]
-    #     repair_ops = self.operator_values[self.n_destroy_actions:]
-    #
-    #     # 绘制算子权重
-    #     plt.bar(
-    #         range(len(self.operator_values)),
-    #         self.operator_values,
-    #         color=['blue'] * self.n_destroy_actions + ['green'] * self.n_repair_actions
-    #     )
-    #     plt.xticks(range(len(self.operator_values)),
-    #                [f'D{i}' for i in range(self.n_destroy_actions)] +
-    #                [f'R{i}' for i in range(self.n_repair_actions)])
-    #     plt.title(f"Agent {self.agent_id} - Operator Values")
-    #     plt.xlabel("Operator")
-    #     plt.ylabel("Value")
-    #
-    #     plt.tight_layout()
-    #
-    #     # Save figure
-    #     file_name = f"agent_{self.agent_id}_frag_{f_num}_metrics_{len(self.train_metrics['epsilon'])}.png"
-    #     file_path = os.path.join(config.get('log_dir'), file_name)
-    #     plt.savefig(file_path)
-    #     plt.close()
 

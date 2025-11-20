@@ -16,6 +16,7 @@ from tqdm import tqdm
 from Config import Config
 config = Config('args.yaml', 'yaml')
 
+from collections import defaultdict
 # from state_encoder import EnhancedStateEncoder
 
 class ALNS:
@@ -87,6 +88,10 @@ class ALNS:
         self.stagnation_counter = 0
         # maxlen=50 表示我们只关心最近50步的改善情况，这个值可以根据需要调整
         self.recent_improvements = deque(maxlen=50)
+
+        # --- 【新代码】 ---
+        # 追踪弧段“年龄”，用于识别“僵化”的解
+        self.arc_age = defaultdict(int)
 
     # 【新增代码】在ALNS类中新增此方法
     def _update_blackboard(self, solution):
@@ -169,6 +174,55 @@ class ALNS:
                     if self.model.Arc_list[arc1].link_time < self.model.Arc_list[arc2].link_time:
                         s_index[i], s_index[j] = s_index[j], s_index[i]
         remove_list = s_index[: num]
+        return remove_list
+
+    def bottleneck_based_destroy(self, fragment, num):
+        """
+        【新算子】基于“资源瓶颈”的破坏策略
+        1. 找到当前解中“最繁忙”的地面站（按时间重叠度）
+        2. 优先破坏该地面站的弧段
+        """
+        if not fragment.currentSol.Arc_list_id:
+            return []
+
+        # 1. 识别瓶颈资源（这里以地面站为例）
+        station_arcs = defaultdict(list)
+        for arc_id in fragment.currentSol.Arc_list_id:
+            arc = self.model.Arc_list[arc_id]
+            station_arcs[arc.ground].append(arc)
+
+        if not station_arcs:
+            return self.random_destroy(fragment, num)  # 回退
+
+        # 2. 计算每个地面站的“繁忙程度”（时间总和）
+        # (更高级的实现会检查时间重叠密度，但先用总时间作为代理)
+        station_load = {ground: sum(arc.link_time for arc in arcs)
+                        for ground, arcs in station_arcs.items()}
+
+        # 找到最繁忙的 1-3 个地面站
+        bottleneck_stations = sorted(station_load, key=station_load.get, reverse=True)[:3]
+
+        # 3. 收集所有属于瓶颈站的弧段
+        candidate_arcs = []
+        for ground in bottleneck_stations:
+            candidate_arcs.extend([arc.id for arc in station_arcs[ground]])
+
+        # 过滤掉 tabu
+        not_tabu_candidates = [arc_id for arc_id in candidate_arcs
+                               if self.tabu_destroy[arc_id] == 0]
+
+        if len(not_tabu_candidates) == 0:
+            # 如果瓶颈弧段都在 tabu 中，回退
+            return self.random_destroy(fragment, num)
+
+        # 4. 从瓶颈弧段中随机选择 num 个进行破坏
+        remove_list = random.sample(not_tabu_candidates, min(num, len(not_tabu_candidates)))
+
+        # 年龄清零
+        for arc_id in remove_list:
+            if arc_id in self.arc_age:
+                self.arc_age[arc_id] = 0
+
         return remove_list
 
     def lt_destroy(self, fragment, num):
@@ -428,6 +482,50 @@ class ALNS:
             remove_list.extend(random.sample(normal_arcs, min(remaining, len(normal_arcs))))
 
         return remove_list
+
+    # 【新算子】
+    def coordinated_boundary_destroy(self, fragment, num):
+        """
+        协调边界破坏：
+        1. 仅在停滞时激活 (stagnation_counter > 20)
+        2. 专门移除与blackboard上邻居解冲突的弧段
+        """
+        not_tabu_ls = [arc for arc in fragment.currentSol.Arc_list_id if self.tabu_destroy[arc] == 0]
+
+        # 1. 检查是否停滞
+        if self.stagnation_counter < 20 and len(not_tabu_ls) >= num:
+            # 如果没有停滞，就退化为 'boundary_preserving_destroy' (ID=5)
+            return self.boundary_preserving_destroy(fragment, num)
+
+        # 2. 如果停滞，则主动清理冲突
+        conflict_arcs = []
+        normal_arcs = []
+
+        for arc_id in not_tabu_ls:
+            # 【核心】主动读取 Blackboard 检查冲突
+            if self._check_arc_against_blackboard(arc_id):
+                conflict_arcs.append(arc_id)
+            else:
+                normal_arcs.append(arc_id)
+
+        # 3. 优先移除冲突弧段
+        remove_list = conflict_arcs[:num]
+
+        # 4. 如果冲突弧段不够，用普通弧段补充
+        if len(remove_list) < num:
+            remaining = num - len(remove_list)
+            # 优先从边界附近移除，以创造空间
+            boundary_arcs = [arc for arc in normal_arcs if self._is_near_boundary(arc)]
+            remove_list.extend(boundary_arcs[:remaining])
+
+            # 仍然不够，随机补充
+            if len(remove_list) < num:
+                remaining_normal = [arc for arc in normal_arcs if arc not in remove_list]
+                remove_list.extend(
+                    random.sample(remaining_normal, min(num - len(remove_list), len(remaining_normal))))
+
+        return remove_list
+
     def boundary_buffer_destroy(self, fragment, num):
         """边界缓冲破坏：在边界附近创造时间缓冲区"""
         not_tabu_ls = [arc for arc in fragment.currentSol.Arc_list_id if self.tabu_destroy[arc] == 0]
@@ -455,6 +553,79 @@ class ALNS:
                 remove_list.extend(random.sample(inner_arcs, min(remaining, len(inner_arcs))))
 
         return remove_list
+
+    def proactive_boundary_destroy(self, fragment, num):
+        """
+        【新算子】主动协同边界破坏
+        1. 读取Blackboard，找到邻居的边界弧段
+        2. 识别本方解中，与邻居弧段 "靠得太近"（有压力）的弧段
+        3. 优先破坏这些 "高压力" 弧段，为重组边界创造空间
+        """
+        if self.blackboard is None or not hasattr(self, 'f_num'):
+            return self.boundary_buffer_destroy(fragment, num)  # 回退
+
+        not_tabu_ls = [arc for arc in fragment.currentSol.Arc_list_id if self.tabu_destroy[arc] == 0]
+        current_f_num = self.f_num
+        neighbor_arcs = []
+
+        # 1. 收集所有邻居的边界弧段
+        try:
+            if current_f_num > 0:
+                neighbor_arcs.extend(self.blackboard.get(current_f_num - 1, []))
+            if current_f_num < len(self.model.fragment_list) - 1:
+                neighbor_arcs.extend(self.blackboard.get(current_f_num + 1, []))
+        except Exception:
+            pass  # 回退
+
+        if not neighbor_arcs:
+            return self.boundary_buffer_destroy(fragment, num)  # 回退
+
+        # 2. 计算本方弧段的“边界压力”
+        arc_pressure = {}
+        BOUNDARY_SENSITIVITY = self.model.ground_trans_time + 3600  # 340s + 1小时
+
+        for arc_id in not_tabu_ls:
+            arc = self.model.Arc_list[arc_id]
+            pressure = 0
+
+            # 只关心边界附近的弧段
+            if not self._is_near_boundary(arc_id, buffer_time=BOUNDARY_SENSITIVITY):
+                arc_pressure[arc_id] = 0
+                continue
+
+            for n_arc_dict in neighbor_arcs:
+                # n_arc_dict 是 {'id': ..., 'st': ..., 'et': ...}
+                n_st = n_arc_dict['st']
+                n_et = n_arc_dict['et']
+
+                # 计算时间间隔 (越小压力越大)
+                gap_st = abs(arc.link_st - n_et)
+                gap_et = abs(n_st - arc.link_et)
+                min_gap = min(gap_st, gap_et)
+
+                # 如果有重叠 (即使不冲突，比如不同G/S)，压力也很大
+                overlap = max(0, min(arc.link_et, n_et) - max(arc.link_st, n_st))
+
+                if overlap > 0:
+                    pressure += (overlap / 3600.0)
+                elif min_gap < BOUNDARY_SENSITIVITY:
+                    # 压力与间隔成反比
+                    pressure += (1.0 - (min_gap / BOUNDARY_SENSITIVITY))
+
+            arc_pressure[arc_id] = pressure
+
+        # 3. 优先破坏“压力大”的弧段
+        sorted_by_pressure = sorted(not_tabu_ls, key=lambda arc_id: arc_pressure[arc_id], reverse=True)
+
+        remove_list = sorted_by_pressure[:num]
+
+        # 年龄清零
+        for arc_id in remove_list:
+            if arc_id in self.arc_age:
+                self.arc_age[arc_id] = 0
+
+        return remove_list
+
     def boundary_coordinated_insert(self, d_arc_list_id, rest_arc_list_id, lt):
         """边界协调插入：插入时主动考虑跨片段协调"""
         not_tabu_insert = [arc for arc in rest_arc_list_id if self.tabu_insert[arc] == 0]
@@ -469,6 +640,33 @@ class ALNS:
         s_arc_list = [arc_id for arc_id, _ in sorted(boundary_friendly_arcs, key=lambda x: x[1], reverse=True)]
         arc_list, insert_arc, lt = self.insert_process(d_arc_list_id, s_arc_list, lt)
         return arc_list, insert_arc, lt
+
+    # 【新算子】
+    def blackboard_aware_repair(self, d_arc_list_id, rest_arc_list_id, lt):
+        """
+        黑板感知修复：
+        1. 预过滤：移除所有与blackboard冲突的候选弧段
+        2. 在“安全”的弧段中，按链路时间（lt）贪心插入
+        """
+        not_tabu_insert = [arc for arc in rest_arc_list_id if self.tabu_insert[arc] == 0]
+
+        # 1. 【核心】预过滤
+        safe_arcs = []
+        for arc_id in not_tabu_insert:
+            if not self._check_arc_against_blackboard(arc_id):
+                safe_arcs.append(arc_id)
+
+        # 2. 在“安全”弧段中按lt排序（同 lt_insert）
+        s_arc_list = sorted(safe_arcs, key=lambda x: self.model.Arc_list[x].link_time, reverse=True)
+
+        # 3. 执行插入
+        arc_list, insert_arc, lt = self.insert_process(d_arc_list_id, s_arc_list, lt)
+
+        # 4. (可选) 如果插入后还有空间，尝试插入那些 *有冲突但价值高* 的弧段？
+        # (暂时不建议，保持简单)
+
+        return arc_list, insert_arc, lt
+
     def boundary_risk_minimizing_insert(self, d_arc_list_id, rest_arc_list_id, lt):
         """边界风险最小插入：以最小化边界风险为目标插入"""
         not_tabu_insert = [arc for arc in rest_arc_list_id if self.tabu_insert[arc] == 0]
@@ -589,6 +787,7 @@ class ALNS:
             remove_list = self.random_destroy(fragment, num)
         elif destroy_id == 1:
             remove_list = self.max_station_destroy(fragment, num)
+            # remove_list = self.bottleneck_based_destroy(fragment, num)
         elif destroy_id == 2:
             remove_list = self.lt_destroy(fragment, num)
         elif destroy_id == 3:
@@ -598,10 +797,15 @@ class ALNS:
         # #########边界
         elif destroy_id == 5:
             remove_list = self.boundary_preserving_destroy(fragment, num)
+            # remove_list = self.max_station_destroy(fragment, num)
         elif destroy_id == 6:
             remove_list = self.boundary_conflict_cleanup_destroy(fragment, num)
+            # remove_list = self.lt_destroy(fragment, num)
+            # remove_list = self.coordinated_boundary_destroy(fragment, num)
         elif destroy_id == 7:
             remove_list = self.boundary_buffer_destroy(fragment, num)
+            # remove_list = self.conf_destroy(fragment, num)
+            # remove_list = self.proactive_boundary_destroy(fragment, num)
 
         d_arclist_id = copy.copy(fragment.currentSol.Arc_list_id)
         remove_list = list(set(remove_list))
@@ -642,6 +846,7 @@ class ALNS:
         ##################边界
         elif repair_id == 5:
             new_sol.Arc_list_id, insert_arc, lt = self.boundary_coordinated_insert(d_arc_list_id, rest_arc_list_id, lt)
+            # new_sol.Arc_list_id, insert_arc, lt = self.blackboard_aware_repair(d_arc_list_id, rest_arc_list_id, lt)
         elif repair_id == 6:
             new_sol.Arc_list_id, insert_arc, lt = self.boundary_risk_minimizing_insert(d_arc_list_id, rest_arc_list_id, lt)
         elif repair_id == 7:
@@ -964,193 +1169,256 @@ class ALNS:
         )
         return total_boundary_weight / len(solution.Arc_list_id)
 
-    # def calculate_reward(self, prev_solution, new_solution, confn, conft):
-    #     """优化版本的奖励计算"""
-    #     # 链接时间改进
-    #     link_time_diff = new_solution.link_time - prev_solution.link_time
-    #
-    #     # print("冲突",confn,conft)
-    #     #
-    #     # # 冲突惩罚
-    #     # conflict_penalty = confn * 0.55 + conft * 0.00015
-    #
-    #     # 归一化处理
-    #     reward1_min, reward1_max = -2000, 500
-    #     reward2_min, reward2_max = 0, 50
-    #     reward3_min, reward3_max = 0, 3000
-    #
-    #     link_time_diff_norm = max(min(link_time_diff, reward1_max), reward1_min)
-    #     confn_norm = max(min(confn, reward2_max), reward2_min)
-    #     conft_norm = max(min(conft, reward3_max), reward3_min)
-    #
-    #     reward1_normalized = (link_time_diff_norm - reward1_min) / (reward1_max - reward1_min)
-    #     reward2_normalized = (confn_norm - reward2_min) / (reward2_max - reward2_min)
-    #     reward3_normalized = (conft_norm - reward3_min) / (reward3_max - reward3_min)
-    #
-    #     reward1_normalized = 2 * reward1_normalized - 1
-    #
-    #     # 权重
-    #     weight1 = config.get('weight1') * 1.1
-    #     weight2 = config.get('weight2')
-    #     weight3 = config.get('weight3')
-    #
-    #     # 多样性和效率奖励
-    #     solution_diversity = len(set(new_solution.Arc_list_id) - set(prev_solution.Arc_list_id)) / max(1,
-    #                                                                                                    len(new_solution.Arc_list_id))
-    #     diversity_weight = 10
-    #
-    #     efficiency = new_solution.link_time / max(1, len(new_solution.Arc_list_id))
-    #     prev_efficiency = prev_solution.link_time / max(1, len(prev_solution.Arc_list_id))
-    #     efficiency_improvement = (efficiency - prev_efficiency) / max(1, prev_efficiency)
-    #     efficiency_weight = 100
-    #
-    #     # 【优化】边界风险惩罚 - 复用缓存计算
-    #     prev_boundary_risk = self._calculate_solution_boundary_risk(prev_solution)
-    #     new_boundary_risk = self._calculate_solution_boundary_risk(new_solution)
-    #     boundary_risk_penalty = (new_boundary_risk - prev_boundary_risk) * 1000
-    #
-    #     # print('+:',reward1_normalized,'-:',reward2_normalized,'-:',reward3_normalized,'+:',solution_diversity,'+:',efficiency_improvement,'-:',boundary_risk_penalty)
-    #
-    #     # 计算总奖励
-    #     total_reward = (weight1 * reward1_normalized -
-    #                     weight2 * reward2_normalized -
-    #                     weight3 * reward3_normalized +
-    #                     diversity_weight * solution_diversity +
-    #                     efficiency_weight * efficiency_improvement -
-    #                     boundary_risk_penalty)
-    #
-    #     self.reward_components={
-    #             "link_time": weight1 * reward1_normalized,
-    #             "conflict": -weight2 * reward2_normalized - weight3 * reward3_normalized,
-    #             "diversity": diversity_weight * solution_diversity,
-    #             "efficiency": efficiency_weight * efficiency_improvement,
-    #             "boundary": -boundary_risk_penalty
-    #         }
-    #
-    #     return total_reward
+    def calculate_reward(self, prev_solution, new_solution, confn, conft):
+        """优化版本的奖励计算"""
+        # 链接时间改进
+        link_time_diff = new_solution.link_time - prev_solution.link_time
+
+        # print("冲突",confn,conft)
+        #
+        # # 冲突惩罚
+        # conflict_penalty = confn * 0.55 + conft * 0.00015
+
+        # 归一化处理
+        reward1_min, reward1_max = -2000, 500
+        reward2_min, reward2_max = 0, 50
+        reward3_min, reward3_max = 0, 3000
+
+        link_time_diff_norm = max(min(link_time_diff, reward1_max), reward1_min)
+        confn_norm = max(min(confn, reward2_max), reward2_min)
+        conft_norm = max(min(conft, reward3_max), reward3_min)
+
+        reward1_normalized = (link_time_diff_norm - reward1_min) / (reward1_max - reward1_min)
+        reward2_normalized = (confn_norm - reward2_min) / (reward2_max - reward2_min)
+        reward3_normalized = (conft_norm - reward3_min) / (reward3_max - reward3_min)
+
+        reward1_normalized = 2 * reward1_normalized - 1
+
+        # 权重
+        weight1 = config.get('weight1') * 1.1
+        weight2 = config.get('weight2')
+        weight3 = config.get('weight3')
+
+        # 多样性和效率奖励
+        solution_diversity = len(set(new_solution.Arc_list_id) - set(prev_solution.Arc_list_id)) / max(1,
+                                                                                                       len(new_solution.Arc_list_id))
+        diversity_weight = 10
+
+        efficiency = new_solution.link_time / max(1, len(new_solution.Arc_list_id))
+        prev_efficiency = prev_solution.link_time / max(1, len(prev_solution.Arc_list_id))
+        efficiency_improvement = (efficiency - prev_efficiency) / max(1, prev_efficiency)
+        efficiency_weight = 100
+
+        # 【优化】边界风险惩罚 - 复用缓存计算
+        prev_boundary_risk = self._calculate_solution_boundary_risk(prev_solution)
+        new_boundary_risk = self._calculate_solution_boundary_risk(new_solution)
+        boundary_risk_penalty = (new_boundary_risk - prev_boundary_risk) * 1000
+
+        # print('+:',reward1_normalized,'-:',reward2_normalized,'-:',reward3_normalized,'+:',solution_diversity,'+:',efficiency_improvement,'-:',boundary_risk_penalty)
+
+        # 计算总奖励
+        total_reward = (weight1 * reward1_normalized -
+                        weight2 * reward2_normalized -
+                        weight3 * reward3_normalized +
+                        diversity_weight * solution_diversity +
+                        efficiency_weight * efficiency_improvement -
+                        boundary_risk_penalty)
+
+        self.reward_components={
+                "link_time": weight1 * reward1_normalized,
+                "conflict": -weight2 * reward2_normalized - weight3 * reward3_normalized,
+                "diversity": diversity_weight * solution_diversity,
+                "efficiency": efficiency_weight * efficiency_improvement,
+                "boundary": -boundary_risk_penalty
+            }
+
+        return total_reward
+
+    def _check_arc_against_blackboard(self, arc_id):
+        """
+        【新辅助函数 1】
+        检查单个弧段ID是否与blackboard上的邻居冲突。
+
+        Args:
+            arc_id (int): 要检查的本地弧段ID。
+
+        Returns:
+            bool: True表示存在冲突，False表示无冲突。
+        """
+        # 如果没有blackboard或f_num未设置，则跳过
+        if self.blackboard is None or not hasattr(self, 'f_num'):
+            return False
+
+        current_f_num = self.f_num
+
+        try:
+            # 1. 检查左邻居 (f_num - 1)
+            if current_f_num > 0:
+                # 获取左邻居在blackboard上发布的弧段列表
+                neighbor_arcs = self.blackboard.get(current_f_num - 1)
+                if neighbor_arcs:
+                    for n_arc in neighbor_arcs:
+                        # n_arc 是一个字典 {'id': ..., 'st': ..., 'et': ...}
+                        # 复用已有的约束检查逻辑
+                        if self._check_constraint_violation(arc_id, n_arc['id']):
+                            return True  # 发现冲突，立即返回
+
+            # 2. 检查右邻居 (f_num + 1)
+            if current_f_num < len(self.model.fragment_list) - 1:
+                # 获取右邻居在blackboard上发布的弧段列表
+                neighbor_arcs = self.blackboard.get(current_f_num + 1)
+                if neighbor_arcs:
+                    for n_arc in neighbor_arcs:
+                        if self._check_constraint_violation(arc_id, n_arc['id']):
+                            return True  # 发现冲突，立即返回
+
+        except Exception as e:
+            # 处理多进程字典可能的瞬时读取错误
+            # print(f"Warning: Error reading blackboard: {e}")
+            pass
+
+        return False  # 未发现冲突
+
+    def _count_blackboard_conflicts(self, solution):
+        """
+        【新辅助函数 2】
+        计算一个完整解 (Sol) 中有多少弧段与blackboard冲突。
+
+        Args:
+            solution (Sol): 要检查的解对象。
+
+        Returns:
+            int: 与blackboard冲突的弧段数量。
+        """
+        if self.blackboard is None or not solution or not solution.Arc_list_id:
+            return 0
+
+        conflict_count = 0
+        for arc_id in solution.Arc_list_id:
+            if self._check_arc_against_blackboard(arc_id):
+                conflict_count += 1
+        return conflict_count
 
     # ALNS_DQN2_addoffline_log.py
     # 【注意：这是最终的完整替换版本】
-    def calculate_reward(self, prev_solution, new_solution, confn, conft):
-        """
-        一个稳定、均衡且具备协同引导的全新奖励函数。
-        (优雅实现版：将边界冲突计算内联)
-        """
-        # --- 1. 定义各分量的权重 ---
-        W_LINK_TIME = 10  # 主要目标
-        # W_IMPROVEMENT = 1.5  # 对改善内部和外部冲突的综合奖励
-        # W_STRUCTURE = 0.3  # 对改善解结构的奖励（效率和多样性）
-        # W_BOUNDARY = 0
-
-        # --- 2. 计算主要目标奖励 (Link Time) ---
-        link_time_change = new_solution.link_time - prev_solution.link_time
-        scaled_link_time_change = link_time_change / 500.0
-        link_time_reward = np.clip(scaled_link_time_change, -1.0, 1.0)
-
-        # # --- 3. 计算冲突改善奖励 (内部冲突 + 边界协调) ---
-        # # 3.1 内部冲突改善
-        # # 注意: 此处 prev_internal_conflicts 需您在ALNS.run循环中记录并传入
-        # # 为确保代码能直接运行，我们先假设一个获取方式，您可能需要调整
-        # prev_internal_conflicts = getattr(prev_solution, 'internal_conflicts', 0)  # 假设冲突数已计算并存在解对象中
-        # new_internal_conflicts = confn
-        # internal_conflict_improvement = prev_internal_conflicts - new_internal_conflicts
-        # # 3.2 外部边界冲突改善 (内联计算)
-        # prev_boundary_conflicts = 0
-        # if self.blackboard is not None and prev_solution and prev_solution.Arc_list_id:
-        #     f_num = self.f_num
-        #     # 检查左邻居
-        #     if f_num > 0 and self.blackboard.get(f_num - 1):
-        #         for arc_id in prev_solution.Arc_list_id:
-        #             for n_arc in self.blackboard[f_num - 1]:
-        #                 if self._check_constraint_violation(arc_id, n_arc['id']):
-        #                     prev_boundary_conflicts += 1
-        #                     break
-        #     # 检查右邻居
-        #     if f_num < len(self.model.fragment_list) - 1 and self.blackboard.get(f_num + 1):
-        #         for arc_id in prev_solution.Arc_list_id:
-        #             for n_arc in self.blackboard[f_num + 1]:
-        #                 if self._check_constraint_violation(arc_id, n_arc['id']):
-        #                     prev_boundary_conflicts += 1
-        #                     break
-        # new_boundary_conflicts = 0
-        # if self.blackboard is not None and new_solution and new_solution.Arc_list_id:
-        #     f_num = self.f_num
-        #     # 检查左邻居
-        #     if f_num > 0 and self.blackboard.get(f_num - 1):
-        #         for arc_id in new_solution.Arc_list_id:
-        #             for n_arc in self.blackboard[f_num - 1]:
-        #                 if self._check_constraint_violation(arc_id, n_arc['id']):
-        #                     new_boundary_conflicts += 1
-        #                     break
-        #     # 检查右邻居
-        #     if f_num < len(self.model.fragment_list) - 1 and self.blackboard.get(f_num + 1):
-        #         for arc_id in new_solution.Arc_list_id:
-        #             for n_arc in self.blackboard[f_num + 1]:
-        #                 if self._check_constraint_violation(arc_id, n_arc['id']):
-        #                     new_boundary_conflicts += 1
-        #                     break
-        # boundary_conflict_improvement = prev_boundary_conflicts - new_boundary_conflicts
-        # # 3.3 综合冲突改善
-        # total_improvement = internal_conflict_improvement + boundary_conflict_improvement
-        # scaled_improvement = total_improvement / 5.0  # 用5个冲突作为典型变化值进行缩放
-        # improvement_reward = np.clip(scaled_improvement, -2.0, 2.0)
-        #
-        # #【优化】边界风险惩罚 - 复用缓存计算
-        # prev_boundary_risk = self._calculate_solution_boundary_risk(prev_solution)
-        # new_boundary_risk = self._calculate_solution_boundary_risk(new_solution)
-        # boundary_risk_penalty = -(new_boundary_risk - prev_boundary_risk) * 1000
-
-        # # --- 4. 计算解结构奖励 (效率 + 多样性) ---
-        # prev_efficiency = prev_solution.link_time / max(1, len(prev_solution.Arc_list_id))
-        # new_efficiency = new_solution.link_time / max(1, len(new_solution.Arc_list_id))
-        # efficiency_change = new_efficiency - prev_efficiency
-        # scaled_efficiency_change = efficiency_change / 100.0
-        #
-        # diversity = len(set(new_solution.Arc_list_id) - set(prev_solution.Arc_list_id)) / max(1,
-        #                                                                                       len(new_solution.Arc_list_id))
-        #
-        # structure_reward = np.clip(scaled_efficiency_change + diversity, -0.5, 0.5)
-
-        # --- 5. 计算总奖励 ---
-        total_reward = (W_LINK_TIME * link_time_reward
-                        # + W_IMPROVEMENT * improvement_reward
-                        # + W_STRUCTURE * structure_reward
-                        # + W_BOUNDARY*boundary_risk_penalty
-                        )
-
-        # 用于日志记录
-        self.reward_components = {
-            "link_time": W_LINK_TIME * link_time_reward,
-            # "improvement": W_IMPROVEMENT * improvement_reward,
-            # "structure": W_STRUCTURE * structure_reward,
-            # "boundary": -boundary_risk_penalty,
-            "raw_link_time_change": link_time_change,
-            # "raw_conflict_improvement": total_improvement
-        }
-
-        return total_reward
+    # def calculate_reward(self, prev_solution, new_solution, confn, conft):
+    #     """
+    #     一个稳定、均衡且具备协同引导的全新奖励函数。
+    #     (优雅实现版：将边界冲突计算内联)
+    #     """
+    #     # --- 1. 定义各分量的权重 ---
+    #     W_LINK_TIME = 10  # 主要目标
+    #     # W_IMPROVEMENT = 1.5  # 对改善内部和外部冲突的综合奖励
+    #     # W_STRUCTURE = 0.3  # 对改善解结构的奖励（效率和多样性）
+    #     # W_BOUNDARY = 0
+    #
+    #     # --- 2. 计算主要目标奖励 (Link Time) ---
+    #     link_time_change = new_solution.link_time - prev_solution.link_time
+    #     scaled_link_time_change = link_time_change / 500.0
+    #     link_time_reward = np.clip(scaled_link_time_change, -1.0, 1.0)
+    #
+    #     # # --- 3. 计算冲突改善奖励 (内部冲突 + 边界协调) ---
+    #     # # 3.1 内部冲突改善
+    #     # # 注意: 此处 prev_internal_conflicts 需您在ALNS.run循环中记录并传入
+    #     # # 为确保代码能直接运行，我们先假设一个获取方式，您可能需要调整
+    #     # prev_internal_conflicts = getattr(prev_solution, 'internal_conflicts', 0)  # 假设冲突数已计算并存在解对象中
+    #     # new_internal_conflicts = confn
+    #     # internal_conflict_improvement = prev_internal_conflicts - new_internal_conflicts
+    #     # # 3.2 外部边界冲突改善 (内联计算)
+    #     # prev_boundary_conflicts = 0
+    #     # if self.blackboard is not None and prev_solution and prev_solution.Arc_list_id:
+    #     #     f_num = self.f_num
+    #     #     # 检查左邻居
+    #     #     if f_num > 0 and self.blackboard.get(f_num - 1):
+    #     #         for arc_id in prev_solution.Arc_list_id:
+    #     #             for n_arc in self.blackboard[f_num - 1]:
+    #     #                 if self._check_constraint_violation(arc_id, n_arc['id']):
+    #     #                     prev_boundary_conflicts += 1
+    #     #                     break
+    #     #     # 检查右邻居
+    #     #     if f_num < len(self.model.fragment_list) - 1 and self.blackboard.get(f_num + 1):
+    #     #         for arc_id in prev_solution.Arc_list_id:
+    #     #             for n_arc in self.blackboard[f_num + 1]:
+    #     #                 if self._check_constraint_violation(arc_id, n_arc['id']):
+    #     #                     prev_boundary_conflicts += 1
+    #     #                     break
+    #     # new_boundary_conflicts = 0
+    #     # if self.blackboard is not None and new_solution and new_solution.Arc_list_id:
+    #     #     f_num = self.f_num
+    #     #     # 检查左邻居
+    #     #     if f_num > 0 and self.blackboard.get(f_num - 1):
+    #     #         for arc_id in new_solution.Arc_list_id:
+    #     #             for n_arc in self.blackboard[f_num - 1]:
+    #     #                 if self._check_constraint_violation(arc_id, n_arc['id']):
+    #     #                     new_boundary_conflicts += 1
+    #     #                     break
+    #     #     # 检查右邻居
+    #     #     if f_num < len(self.model.fragment_list) - 1 and self.blackboard.get(f_num + 1):
+    #     #         for arc_id in new_solution.Arc_list_id:
+    #     #             for n_arc in self.blackboard[f_num + 1]:
+    #     #                 if self._check_constraint_violation(arc_id, n_arc['id']):
+    #     #                     new_boundary_conflicts += 1
+    #     #                     break
+    #     # boundary_conflict_improvement = prev_boundary_conflicts - new_boundary_conflicts
+    #     # # 3.3 综合冲突改善
+    #     # total_improvement = internal_conflict_improvement + boundary_conflict_improvement
+    #     # scaled_improvement = total_improvement / 5.0  # 用5个冲突作为典型变化值进行缩放
+    #     # improvement_reward = np.clip(scaled_improvement, -2.0, 2.0)
+    #     #
+    #     # #【优化】边界风险惩罚 - 复用缓存计算
+    #     # prev_boundary_risk = self._calculate_solution_boundary_risk(prev_solution)
+    #     # new_boundary_risk = self._calculate_solution_boundary_risk(new_solution)
+    #     # boundary_risk_penalty = -(new_boundary_risk - prev_boundary_risk) * 1000
+    #
+    #     # # --- 4. 计算解结构奖励 (效率 + 多样性) ---
+    #     # prev_efficiency = prev_solution.link_time / max(1, len(prev_solution.Arc_list_id))
+    #     # new_efficiency = new_solution.link_time / max(1, len(new_solution.Arc_list_id))
+    #     # efficiency_change = new_efficiency - prev_efficiency
+    #     # scaled_efficiency_change = efficiency_change / 100.0
+    #     #
+    #     # diversity = len(set(new_solution.Arc_list_id) - set(prev_solution.Arc_list_id)) / max(1,
+    #     #                                                                                       len(new_solution.Arc_list_id))
+    #     #
+    #     # structure_reward = np.clip(scaled_efficiency_change + diversity, -0.5, 0.5)
+    #
+    #     # --- 5. 计算总奖励 ---
+    #     total_reward = (W_LINK_TIME * link_time_reward
+    #                     # + W_IMPROVEMENT * improvement_reward
+    #                     # + W_STRUCTURE * structure_reward
+    #                     # + W_BOUNDARY*boundary_risk_penalty
+    #                     )
+    #
+    #     # 用于日志记录
+    #     self.reward_components = {
+    #         "link_time": W_LINK_TIME * link_time_reward,
+    #         # "improvement": W_IMPROVEMENT * improvement_reward,
+    #         # "structure": W_STRUCTURE * structure_reward,
+    #         # "boundary": -boundary_risk_penalty,
+    #         "raw_link_time_change": link_time_change,
+    #         # "raw_conflict_improvement": total_improvement
+    #     }
+    #
+    #     return total_reward
 
     def clear_caches(self):
         """清除缓存（在片段切换时调用）"""
         self._constraint_violations_cache.clear()
         # 边界弧段和权重缓存在整个运行期间保持有效
 
+    from collections import deque
     # 【保持原有的主要运行逻辑，但调整以适配新架构】
-    def run(self, t1, start_time, init, f_num, sol_ls):
+    def run(self, t1, start_time, init, f_num, sol_ls,LAHC=False):
         """
         保持原有运行逻辑，但增强对片段级别训练的支持
         """
         # Store fragment number for state representation
         self.f_num = f_num
-
         # 【保持原有初始化逻辑】
         # destroy_list = [i for i in range(len(self.d_select))] * len(self.r_select)
         # repair_list = [i for i in range(len(self.r_select))] * len(self.d_select)
         # random.shuffle(destroy_list)
         # random.shuffle(repair_list)
-
         self.const_tabu_dic()
-
         # 【新增代码】在每次运行开始时，重置追踪器
         self.stagnation_counter = 0
         self.recent_improvements.clear()
@@ -1170,124 +1438,88 @@ class ALNS:
         self.elite_sol[fragment.bestSol.link_time] = fragment.bestSol
         self.history_lt.append(fragment.bestSol.link_time)
         it = 0
-        
-        # 根据片段位置调整初始温度
-        # t = 110 if (self.f_num == 0 or self.f_num == len(self.model.fragment_min_st_max_et) - 1) else 100
-
-        # fire_reward = 0
-        # need_fire = 0
 
         # 【提示】在offline模式下的运行信息
         if self.offline_mode:
             print(f"Fragment {f_num}: Running in OFFLINE mode - no training will occur")
-        
-        # 【保持原有的训练循环逻辑】
-        # for ep in tqdm(range(self.epochs), desc="Training Epoch Progress"):
+
+        # 【LAHC正确初始化】
+        L = 5  # 历史列表长度
+        history_obj_list = deque(maxlen=L)
+        # 用当前解的目标值填满历史列表
+        current_obj = fragment.currentSol.link_time
+        history_obj_list.extend([current_obj] * L)
+        # 移除原有的it计数器相关逻辑，或用新的停滞检测替代
+        consecutive_rejects = 0  # 改用连续拒绝计数
+        best_stagnation_count = 0  # 最优解停滞计数
+        #使用独立的 LAHC 步数计数器
+        lahc_step = 0  # 专用于LAHC的步数计数
+
         for ep in range(self.epochs):
             for i in range(self.q):
-                # 获取当前解的状态
-                state = self.get_state_from_solution(fragment.currentSol, f_num)
-                state2 = self.state_encoder.get_enhanced_features(fragment.currentSol)
-                state.extend(state2)
-                t0 = time.time()
-                fire_reward = 0
-                need_fire = 0
+                if not LAHC:
+                    # 需要基于一种判定后期启动LAHC
+                    #
+                    # 获取当前解的状态
+                    state = self.get_state_from_solution(fragment.currentSol, f_num)
+                    state2 = self.state_encoder.get_enhanced_features(fragment.currentSol)
+                    state.extend(state2)
+                    t0 = time.time()
+                    fire_reward = 0
+                    need_fire = 0
 
-                # # 使用DQN选择摧毁和修复算子
-                # destroy_id, repair_id = self.dqn_agent.act(state)
-                # 计算温度（随搜索进度衰减）
-                progress = ep / self.epochs
-                temperature = 2.0 * (1 - progress) + 0.1  # 从2.0衰减到0.1
-                # 使用Softmax
-                destroy_id, repair_id = self.dqn_agent.act(state, temperature)
-                
-                # 执行摧毁操作
-                d_arclist, remove_list, lt = self.do_destroy(fragment, destroy_id)
-                # 执行修复操作
-                fragment.newSol, insert_list = self.do_repair(fragment, repair_id, d_arclist, remove_list, lt)
+                    # # 使用DQN选择摧毁和修复算子
+                    # destroy_id, repair_id = self.dqn_agent.act(state)
+                    # 计算温度（随搜索进度衰减）
+                    progress = ep / self.epochs
+                    temperature = 2.0 * (1 - progress) + 0.1  # 从2.0衰减到0.1
+                    # 使用Softmax
+                    destroy_id, repair_id = self.dqn_agent.act(state, temperature)
 
-                conf, confn, conft = self.count_conf(f_num, sol=fragment.newSol)
+                    # 执行摧毁操作
+                    d_arclist, remove_list, lt = self.do_destroy(fragment, destroy_id)
+                    # 执行修复操作
+                    fragment.newSol, insert_list = self.do_repair(fragment, repair_id, d_arclist, remove_list, lt)
 
-                improvement = fragment.newSol.link_time - fragment.currentSol.link_time
-                is_accepted = improvement > 0
-                is_best_improved = False
+                    conf, confn, conft = self.count_conf(f_num, sol=fragment.newSol)
 
-                # 【新增代码】更新追踪器的核心逻辑
-                self.recent_improvements.append(1 if is_accepted else 0)
+                    improvement = fragment.newSol.link_time - fragment.currentSol.link_time
+                    is_accepted = improvement > 0
+                    is_best_improved = False
 
-                # 【修改】只在非offline模式下进行训练
-                if not self.offline_mode:
-                    # 计算奖励
-                    reward = self.calculate_reward(fragment.currentSol, fragment.newSol, confn, conft)
-                    done = False
+                    # 【新增代码】更新追踪器的核心逻辑
+                    self.recent_improvements.append(1 if is_accepted else 0)
 
-                # # ✅
-                # improvement=fragment.newSol.link_time - fragment.currentSol.link_time
-                # is_accepted = improvement > 0
-                # is_best_improved = False
+                    # 【修改】只在非offline模式下进行训练
+                    if not self.offline_mode:
+                        # 计算奖励
+                        reward = self.calculate_reward(fragment.currentSol, fragment.newSol, confn, conft)
+                        done = False
 
-                # 【保持原有的接受准则和更新逻辑】
-                if improvement > 0:
+                    # # ✅
+                    # improvement=fragment.newSol.link_time - fragment.currentSol.link_time
+                    # is_accepted = improvement > 0
+                    # is_best_improved = False
 
-                    fragment.currentSol = copy.copy(fragment.newSol)
-                    # 【新增】：添加改进的解到条件VAE
-                    if hasattr(self.dqn_agent, 'vae_manager') and self.dqn_agent.vae_manager:
-                        self.dqn_agent.vae_manager.add_elite_solution_with_context(
-                            solution_arcs=fragment.newSol.Arc_list_id,
-                            objective_value=fragment.newSol.link_time,
-                            previous_best=fragment.currentSol.link_time
-                        )
+                    # 【保持原有的接受准则和更新逻辑】
+                    if improvement > 0:
 
-                    if fragment.newSol.link_time > fragment.bestSol.link_time:
-
-                        self.previous_best_objective = fragment.bestSol.link_time
-
-                        it = 0
-                        # ✅
-                        is_best_improved = True
-                        fragment.bestSol = copy.copy(fragment.newSol)
-                        fragment.bestSol.Arc_list_id.sort(key=lambda x: self.model.Arc_list[x].link_st)
-                        if len(self.elite_sol) < self.n:
-                            self.elite_sol[fragment.bestSol.link_time] = fragment.bestSol
-                        else:
-                            ls = sorted(self.elite_sol)
-                            del self.elite_sol[ls[0]]
-                            self.elite_sol[fragment.bestSol.link_time] = fragment.bestSol
-                        self.d = 0.005
-
-                        # 【新增代码】当找到新的最优解时，更新信息板
-                        self._update_blackboard(fragment.bestSol)
-
-                    else:
-                        it -= 1
-                        self.d = 0.01
-                else:
-                    self.d = 0.03
-                    it += 1
-
-                if is_best_improved:
-                    self.stagnation_counter = 0  # 如果最优解更新，停滞计数器清零
-                else:
-                    self.stagnation_counter += 1 # 否则，计数器加一
-
-                # 【保持原有的早停和模拟退火逻辑】
-                max_it = 100 if (self.f_num == 0 or self.f_num == len(self.model.fragment_min_st_max_et) - 1) else 20
-                if it > max_it:
-                    stop = 1
-                    break
-
-                fire_threshold = 12 if (self.f_num == 0 or self.f_num == len(self.model.fragment_min_st_max_et) - 1) else 10
-                if it > fire_threshold:
-                    self.d = 0.4
-                    need_fire = 1
-                    d_arclist, remove_list, lt = self.do_destroy(fragment, random.randint(0, 4))
-                    fragment.newSol, insert_list = self.do_repair(fragment, 4, d_arclist, remove_list, lt)
-                    fireSol = fragment.newSol
-                    fire_reward = fireSol.link_time - fragment.currentSol.link_time
-                    if fragment.newSol.link_time > fragment.currentSol.link_time:
                         fragment.currentSol = copy.copy(fragment.newSol)
+                        # 【新增】：添加改进的解到条件VAE
+                        if hasattr(self.dqn_agent, 'vae_manager') and self.dqn_agent.vae_manager:
+                            self.dqn_agent.vae_manager.add_elite_solution_with_context(
+                                solution_arcs=fragment.newSol.Arc_list_id,
+                                objective_value=fragment.newSol.link_time,
+                                previous_best=fragment.currentSol.link_time
+                            )
+
                         if fragment.newSol.link_time > fragment.bestSol.link_time:
+
+                            self.previous_best_objective = fragment.bestSol.link_time
+
                             it = 0
+                            # ✅
+                            is_best_improved = True
                             fragment.bestSol = copy.copy(fragment.newSol)
                             fragment.bestSol.Arc_list_id.sort(key=lambda x: self.model.Arc_list[x].link_st)
                             if len(self.elite_sol) < self.n:
@@ -1297,17 +1529,212 @@ class ALNS:
                                 del self.elite_sol[ls[0]]
                                 self.elite_sol[fragment.bestSol.link_time] = fragment.bestSol
                             self.d = 0.005
+
+                            # 【新增代码】当找到新的最优解时，更新信息板
+                            self._update_blackboard(fragment.bestSol)
+
                         else:
-                            it += 1
+                            it -= 1
                             self.d = 0.01
-                            
-                self.history_lt.append(fragment.bestSol.link_time)
+                    else:
+                        self.d = 0.03
+                        it += 1
+
+                    if is_best_improved:
+                        self.stagnation_counter = 0  # 如果最优解更新，停滞计数器清零
+                    else:
+                        self.stagnation_counter += 1  # 否则，计数器加一
+
+                    # 【保持原有的早停和模拟退火逻辑】
+                    max_it = 100 if (
+                                self.f_num == 0 or self.f_num == len(self.model.fragment_min_st_max_et) - 1) else 20
+                    if it > max_it:
+                        stop = 1
+                        break
+
+                    fire_threshold = 12 if (
+                                self.f_num == 0 or self.f_num == len(self.model.fragment_min_st_max_et) - 1) else 10
+                    if it > fire_threshold:
+                        self.d = 0.4
+                        need_fire = 1
+                        d_arclist, remove_list, lt = self.do_destroy(fragment, random.randint(0, 4))
+                        fragment.newSol, insert_list = self.do_repair(fragment, 4, d_arclist, remove_list, lt)
+                        fireSol = fragment.newSol
+                        fire_reward = fireSol.link_time - fragment.currentSol.link_time
+                        if fragment.newSol.link_time > fragment.currentSol.link_time:
+                            fragment.currentSol = copy.copy(fragment.newSol)
+                            if fragment.newSol.link_time > fragment.bestSol.link_time:
+                                it = 0
+                                fragment.bestSol = copy.copy(fragment.newSol)
+                                fragment.bestSol.Arc_list_id.sort(key=lambda x: self.model.Arc_list[x].link_st)
+                                if len(self.elite_sol) < self.n:
+                                    self.elite_sol[fragment.bestSol.link_time] = fragment.bestSol
+                                else:
+                                    ls = sorted(self.elite_sol)
+                                    del self.elite_sol[ls[0]]
+                                    self.elite_sol[fragment.bestSol.link_time] = fragment.bestSol
+                                self.d = 0.005
+                            else:
+                                it += 1
+                                self.d = 0.01
+
+                    self.history_lt.append(fragment.bestSol.link_time)
+
+                else:
+                    # 【LAHC修改 2】: 获取历史目标值
+                    # step_idx = (ep * self.q) + i
+                    # obj_k_ago = history_obj_list[step_idx % L]  # 获取L步前的目标值
+                    # LAHC专用步数
+                    lahc_step += 1
+                    obj_k_ago = history_obj_list[lahc_step % L]
+
+                    # 获取当前解的状态
+                    state = self.get_state_from_solution(fragment.currentSol, f_num)
+                    state2 = self.state_encoder.get_enhanced_features(fragment.currentSol)
+                    state.extend(state2)
+                    t0 = time.time()
+                    # fire_reward = 0
+                    # need_fire = 0
+                    # # 使用DQN选择摧毁和修复算子
+                    # destroy_id, repair_id = self.dqn_agent.act(state)
+                    # 计算温度（随搜索进度衰减）
+                    progress = ep / self.epochs
+                    temperature = 2.0 * (1 - progress) + 0.1  # 从2.0衰减到0.1
+                    # 使用Softmax
+                    destroy_id, repair_id = self.dqn_agent.act(state, temperature)
+
+                    # 执行摧毁操作
+                    d_arclist, remove_list, lt = self.do_destroy(fragment, destroy_id)
+                    # 执行修复操作
+                    fragment.newSol, insert_list = self.do_repair(fragment, repair_id, d_arclist, remove_list, lt)
+
+                    conf, confn, conft = self.count_conf(f_num, sol=fragment.newSol)
+
+                    improvement = fragment.newSol.link_time - fragment.currentSol.link_time
+                    is_accepted = improvement > 0
+                    is_best_improved = False
+
+                    # 【新增代码】更新追踪器的核心逻辑
+                    self.recent_improvements.append(1 if is_accepted else 0)
+
+                    # 【修改】只在非offline模式下进行训练
+                    if not self.offline_mode:
+                        # 计算奖励
+                        reward = self.calculate_reward(fragment.currentSol, fragment.newSol, confn, conft)
+                        done = False
+
+                    new_obj = fragment.newSol.link_time
+                    current_obj = fragment.currentSol.link_time
+                    # 正确的LAHC接受条件（对于最大化问题）
+                    if new_obj >= obj_k_ago:  # 新解不差于历史解就接受
+                        # 接受新解
+                        # 接受解 (即使它比 currentSol 差，但只要比L步前的好就行)
+                        is_accepted = True
+                        fragment.currentSol = copy.copy(fragment.newSol)
+                        current_obj = new_obj  # 更新当前目标值
+                        consecutive_rejects = 0  # 重置连续拒绝计数
+
+                        # if fragment.newSol.link_time > fragment.bestSol.link_time:
+                        if new_obj > fragment.bestSol.link_time:
+                            # ... (更新 bestSol 的逻辑不变) ...
+                            # is_best_improved = True
+                            # fragment.bestSol = copy.copy(fragment.newSol)
+                            self.previous_best_objective = fragment.bestSol.link_time
+                            # ✅
+                            is_best_improved = True
+                            fragment.bestSol = copy.copy(fragment.newSol)
+                            best_stagnation_count = 0  # 重置最优解停滞
+                            fragment.bestSol.Arc_list_id.sort(key=lambda x: self.model.Arc_list[x].link_st)
+                            if len(self.elite_sol) < self.n:
+                                self.elite_sol[fragment.bestSol.link_time] = fragment.bestSol
+                            else:
+                                ls = sorted(self.elite_sol)
+                                del self.elite_sol[ls[0]]
+                                self.elite_sol[fragment.bestSol.link_time] = fragment.bestSol
+                            self.d = 0.005
+
+                            # 【新增代码】当找到新的最优解时，更新信息板
+                            self._update_blackboard(fragment.bestSol)
+
+                        else:
+                            self.d = 0.01
+                            best_stagnation_count += 1
+
+                    else:
+                        # 拒绝解
+                        is_accepted = False
+                        self.d = 0.03
+                        # it += 1  # 只有拒绝时，"it" 才增加
+                        # 拒绝新解，保持当前解不变
+                        consecutive_rejects += 1
+                        best_stagnation_count += 1
+
+                    # 【LAHC修改 4】: 更新历史列表
+                    # 【修正2】正确的历史列表更新：总是用当前解的目标值
+                    # history_obj_list.append(current_obj)  # 使用deque的自动淘汰
+                    history_obj_list[lahc_step % L] = current_obj
+
+                    if is_best_improved:
+                        self.stagnation_counter = 0  # 如果最优解更新，停滞计数器清零
+                    else:
+                        self.stagnation_counter += 1 # 否则，计数器加一
+
+                    # 基于最优解停滞的停止条件
+                    max_stagnation = 200  # 可调整
+                    if best_stagnation_count > max_stagnation:
+                        stop = 1
+                        break
+
+                    fire_threshold = 12 if (self.f_num == 0 or self.f_num == len(self.model.fragment_min_st_max_et) - 1) else 10
+                    if consecutive_rejects > fire_threshold:
+                        self.d = 0.4
+                        need_fire = 1
+                        d_arclist, remove_list, lt = self.do_destroy(fragment, random.randint(0, 4))
+                        fragment.newSol, insert_list = self.do_repair(fragment, 4, d_arclist, remove_list, lt)
+                        # fireSol = fragment.newSol
+                        # fire_reward = fireSol.link_time - fragment.currentSol.link_time
+                        # if fragment.newSol.link_time > fragment.currentSol.link_time:
+                        fire_obj = fragment.newSol.link_time
+
+                        # 【关键修正3】为fire操作获取新的历史参考值
+                        # fire_step_idx = step_idx + 1  # fire操作相当于额外迭代
+                        # obj_k_ago_fire = history_obj_list[fire_step_idx % L]
+                        # Fire也视为一次LAHC迭代
+                        lahc_step += 1
+                        obj_k_ago_fire = history_obj_list[lahc_step % L]
+                        # Fire操作也使用LAHC准则
+                        if fire_obj >= obj_k_ago_fire:
+                            fragment.currentSol = copy.copy(fragment.newSol)
+                            current_obj = fire_obj
+                            consecutive_rejects = 0
+                            # if fragment.newSol.link_time > fragment.bestSol.link_time:
+                            if fire_obj > fragment.bestSol.link_time:
+                                # it = 0
+                                fragment.bestSol = copy.copy(fragment.newSol)
+                                best_stagnation_count = 0
+                                fragment.bestSol.Arc_list_id.sort(key=lambda x: self.model.Arc_list[x].link_st)
+                                if len(self.elite_sol) < self.n:
+                                    self.elite_sol[fragment.bestSol.link_time] = fragment.bestSol
+                                else:
+                                    ls = sorted(self.elite_sol)
+                                    del self.elite_sol[ls[0]]
+                                    self.elite_sol[fragment.bestSol.link_time] = fragment.bestSol
+                                self.d = 0.005
+                            else:
+                                # it += 1
+                                self.d = 0.01
+                        # 无论是否接受，更新历史列表
+                        # history_obj_list.append(current_obj)
+                        history_obj_list[lahc_step % L] = current_obj
+                        # 更新步数索引，因为fire操作消耗了一次迭代
+                        # step_idx = fire_step_idx
+
+                    self.history_lt.append(fragment.bestSol.link_time)
 
                 # ✅ 【核心】记录本步数据（一次调用，全部搞定）
                 if self.metrics_logger:
                     # 获取DQN指标
                     dqn_metrics = self.dqn_agent.get_metrics_for_logging()
-
                     # 计算解的多样性
                     diversity = len(set(fragment.newSol.Arc_list_id) - set(fragment.currentSol.Arc_list_id)) / max(1,
                                                                                                                    len(fragment.newSol.Arc_list_id))
@@ -1379,6 +1806,11 @@ class ALNS:
                     action_id = destroy_id * self.dqn_agent.n_repair_actions + repair_id
                     self.dqn_agent.remember(state, action_id, reward, next_state, done)
                     self.dqn_agent.train_local()
+
+                    # --- 【新代码】---
+                    # 更新所有在当前解中弧段的“年龄”
+                    for arc_id in fragment.currentSol.Arc_list_id:
+                        self.arc_age[arc_id] += 1
 
                     # 更新本地操作权重
                     if i % 5 == 0:

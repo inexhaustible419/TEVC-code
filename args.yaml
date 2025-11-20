@@ -1,4 +1,4 @@
-set_time: 3600
+set_time: 1200
 
 data: C1
 
@@ -10,9 +10,9 @@ it_num: 5 #决定内部挖掘次数num-1
 epochs: 5 #epoch*q为训练执行次数
 q: 50
 
-#weight1: 5.0
-#weight2: 1
-#weight3: 1
+weight1: 5.0
+weight2: 1
+weight3: 1
 
 epsilon: 1.0
 epsilon_decay: 0.9
@@ -24,7 +24,7 @@ gamma: 0.99
 #high_quality_threshold: 1.0
 
 learning_rate: 0.001
-log_dir: runs/vision/hash_state0
+log_dir: runs/vision/测试周期内最后一轮启动LAHC3
 #phi: 0.95
 #process_timeout: 600
 #barrier_timeout: 300

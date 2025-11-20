@@ -2,10 +2,10 @@
 # This file defines which parameters to vary across experiments
 
 # Time limits to test
-set_time: [600]  # 12min, 60min
+set_time: [60]  # 12min, 60min
 
 #Datasets
-data: [C2] #C2, C3, C4, C5, C6, W1, W2, W3, W4, W5, W6
+data: [C1, C2, C3, C4, C5, C6, W1, W2, W3, W4, W5, W6] #C2, C3, C4, C5, C6, W1, W2, W3, W4, W5, W6
 #数据分组 推荐2-12
 fragments: [8]
 # ALNS parameters

@@ -467,12 +467,12 @@ def improved_alns_worker_with_corrected_model(serializable_model, elite_sol, f_n
     # # 2. 创建一个临时的DuelingDQN实例来加载权重
     global_model = DuelingDQN(8 * 8, 65).to(device)
     global_weights_for_prox = None  # 默认没有全局权重
-    if model_to_load_path:
-        print(f"Fragment {f_num}: Loading global model from {model_to_load_path}")
-        checkpoint = torch.load(model_to_load_path, map_location=device)
-        global_model.load_state_dict(checkpoint['model_state'])
-        # 提取全局模型权重，用于FedProx
-        global_weights_for_prox = [p.data.clone() for p in global_model.parameters()]
+    # if model_to_load_path:
+    #     print(f"Fragment {f_num}: Loading global model from {model_to_load_path}")
+    #     checkpoint = torch.load(model_to_load_path, map_location=device)
+    #     global_model.load_state_dict(checkpoint['model_state'])
+    #     # 提取全局模型权重，用于FedProx
+    #     global_weights_for_prox = [p.data.clone() for p in global_model.parameters()]
 
     agent = ParallelDQNAgent(
         agent_id=f_num,
@@ -506,24 +506,34 @@ def improved_alns_worker_with_corrected_model(serializable_model, elite_sol, f_n
     all_elite_sol = {f_num: {} for f_num in range(len(mode.fragment_list))}
     initial_sol_ls = initial_sol[f_num]
     for num in range(it_num):
+        if num == it_num-1:
+            LAHC = True
+        else:
+            LAHC = False
+        # LAHC = False
         # print(f"Fragment {f_num} - Continuous it_num {num+1}/{it_num}")
 
         # 1. 基于累积的精英解生成更好的初始解
-        if num > 0  :
-            # print(f'------------------------------3RD STEP---------------------------------')
+        if num > 0:
             initial_sol_ls.append(best_sol)
+            # print("挖掘前执行的", num, ' ', iter)
+        if num > 0 and num <= 2 : #and iter == 0
+            # print("进行了挖掘",num,' ',iter)
+            # print(f'------------------------------3RD STEP---------------------------------')
+            # initial_sol_ls.append(best_sol)
             fp_ls = use_fp(all_elite_sol[f_num], mode)
             enhanced_sol=elite_cons_sol(best_sol, mode, fp_ls, f_num)
             if enhanced_sol.link_time > best_sol.link_time :
                 initial_sol_ls.append(enhanced_sol)
-                print(f"Fragment {f_num} it_num {num + 1} - accepted improved solution: {enhanced_sol.link_time}>{best_sol.link_time}")
+                print(f"Fragment {f_num} it_num {num} - accepted improved solution: {enhanced_sol.link_time}>{best_sol.link_time}")
             enhanced_sol = IP_cons_sol(mode, fp_ls, f_num)
             if enhanced_sol.link_time > best_sol.link_time :
                 initial_sol_ls.append(enhanced_sol)
-                print(f"Fragment {f_num} it_num {num + 1} - accepted improved solution: {enhanced_sol.link_time}>{best_sol.link_time}")
+                print(f"Fragment {f_num} it_num {num} - accepted improved solution: {enhanced_sol.link_time}>{best_sol.link_time}")
 
             # 按link_time降序排序，保留最优解
             initial_sol_ls = sorted(initial_sol_ls, key=lambda x: x.link_time, reverse=True)
+
 
         def smart_initial_selection():
             # 生成4种候选初始解并快速评估
@@ -554,8 +564,8 @@ def improved_alns_worker_with_corrected_model(serializable_model, elite_sol, f_n
 
         # 2. 运行ALNS算法（使用持续的agent，保持训练状态）
         # print(f'------------------------------2ND STEP---------------------------------')
-        print(f"Fragment {f_num}: Running ALNS with continuous DQN agent (it_num {num+1})")
-        result = alns.run(t1, start_time, 0, f_num, initial_sol_ls)
+        # print(f"Fragment {f_num}: Running ALNS with continuous DQN agent (it_num {num})")
+        result = alns.run(t1, start_time, 0, f_num, initial_sol_ls,LAHC=LAHC)
         elite_sol_result, best_sol, init, f_num_result, may_conf = result
         all_elite_sol[f_num][init] = elite_sol_result
 
@@ -577,7 +587,7 @@ def improved_alns_worker_with_corrected_model(serializable_model, elite_sol, f_n
             'elite_solutions': current_elite_solutions
         })
 
-        print(f"Fragment {f_num} - it_num {num+1} completed, best: {best_sol.link_time if best_sol else 0}")
+        print(f"Fragment {f_num} - it_num {num} completed, best: {best_sol.link_time if best_sol else 0}")
         # print(f"Fragment {f_num} - Cumulative elite solutions: {len(fragment_elite_solutions)}")
 
         if time.time() - t1 > limit_time:
@@ -731,8 +741,8 @@ def main(f):
 
         for iter in range(iter_num):
             # initial_sol = [[] for i in range(len(mode.fragment_list))]
-            print(f'------------------------------Improved Continuous DQN-LNS start{iter}---------------------------------', file=f)
-            print(f'------------------------------Improved Continuous DQN-LNS start{iter}---------------------------------')
+            print(f'------------------------------Improved Continuous DQN-LNS start {iter}---------------------------------', file=f)
+            print(f'------------------------------Improved Continuous DQN-LNS start {iter}---------------------------------')
             # 【移除内层it_num循环】直接启动持续训练的片段进程
             print("Starting continuous training with barrier synchronization...", file=f)
 
@@ -768,8 +778,8 @@ def main(f):
             # 处理结果
             fragment_sol = {f_num: {} for f_num in range(len(serializable_model.fragment_list))}
             may_conf_arc = {f_num: {} for f_num in range(len(serializable_model.fragment_list))}
-            # 分组外频繁模式挖掘
-            all_elite_sol = {f_num: {} for f_num in range(len(mode.fragment_list))}
+            # # 分组外频繁模式挖掘
+            # all_elite_sol = {f_num: {} for f_num in range(len(mode.fragment_list))}
 
             # # 收集所有进程的最终结果
             # successful_fragments = 0
@@ -801,7 +811,7 @@ def main(f):
                         initial_sol[f_num] = [best_sol]
                     successful_fragments += 1
                     best_link_time = best_sol.link_time if best_sol else 0
-                    print(f"✓ Processed continuous training result by it_num {num+1} from fragment {f_num}: best_link_time = {best_link_time}", file=f)
+                    print(f"✓ Processed continuous training result by it_num {num} from fragment {f_num}: best_link_time = {best_link_time}", file=f)
             print(f"Successfully processed {successful_fragments}/{num_fragments} fragments", file=f)
 
             # 检查时间限制
@@ -812,40 +822,40 @@ def main(f):
                 break
 
 
-            # --- 【核心替换】用联邦平均替换掉整个“分组外频繁模式挖掘”部分 ---
-            # 替换为下面的联邦平均逻辑：
-            print("开始全局模型联邦平均...", file=f)
-            # logger.info(f"Iteration {iter}: Starting global model averaging.")
-
-            # 1. 收集所有子进程保存的模型路径
-            agent_model_paths = []
-            for f_num in range(len(serializable_model.fragment_list)):
-                path = os.path.join(config.get('log_dir'), "trained_model", f"fragment_{f_num}.pt")
-                if os.path.exists(path):
-                    agent_model_paths.append(path)
-            if not agent_model_paths:
-                print("警告：没有找到任何Agent模型用于平均。", file=f)
-                # logger.warning(f"Iteration {iter}: No agent models found for averaging.")
-                continue  # 如果没有模型，就直接进入下一轮
-            # 2. 执行模型平均
-            averaged_weights = average_model_weights(agent_model_paths)
-            # 3. 保存新的全局模型
-            if averaged_weights:
-                # 为了能被agent的load_checkpoint兼容，我们保存一个完整的checkpoint结构
-                # 注意：这里只保存了模型权重，其他如epsilon等状态由agent自己维护
-                global_checkpoint = {
-                    'model_state': averaged_weights,
-                    # 可以添加一些元数据
-                    'averaged_from_agents': len(agent_model_paths),
-                    'update_timestamp': time.time(),
-                }
-                os.makedirs(os.path.dirname(global_model_path), exist_ok=True)
-                torch.save(global_checkpoint, global_model_path)
-                print(f"新的全局模型已保存至: {global_model_path}", file=f)
-                # logger.info(f"Iteration {iter}: New global model saved to {global_model_path}")
-            else:
-                print("模型平均失败，跳过本轮全局模型更新。", file=f)
-                # logger.error(f"Iteration {iter}: Model averaging failed.")
+            # # --- 【核心替换】用联邦平均替换掉整个“分组外频繁模式挖掘”部分 ---
+            # # 替换为下面的联邦平均逻辑：
+            # print("开始全局模型联邦平均...", file=f)
+            # # logger.info(f"Iteration {iter}: Starting global model averaging.")
+            #
+            # # 1. 收集所有子进程保存的模型路径
+            # agent_model_paths = []
+            # for f_num in range(len(serializable_model.fragment_list)):
+            #     path = os.path.join(config.get('log_dir'), "trained_model", f"fragment_{f_num}.pt")
+            #     if os.path.exists(path):
+            #         agent_model_paths.append(path)
+            # if not agent_model_paths:
+            #     print("警告：没有找到任何Agent模型用于平均。", file=f)
+            #     # logger.warning(f"Iteration {iter}: No agent models found for averaging.")
+            #     continue  # 如果没有模型，就直接进入下一轮
+            # # 2. 执行模型平均
+            # averaged_weights = average_model_weights(agent_model_paths)
+            # # 3. 保存新的全局模型
+            # if averaged_weights:
+            #     # 为了能被agent的load_checkpoint兼容，我们保存一个完整的checkpoint结构
+            #     # 注意：这里只保存了模型权重，其他如epsilon等状态由agent自己维护
+            #     global_checkpoint = {
+            #         'model_state': averaged_weights,
+            #         # 可以添加一些元数据
+            #         'averaged_from_agents': len(agent_model_paths),
+            #         'update_timestamp': time.time(),
+            #     }
+            #     os.makedirs(os.path.dirname(global_model_path), exist_ok=True)
+            #     torch.save(global_checkpoint, global_model_path)
+            #     print(f"新的全局模型已保存至: {global_model_path}", file=f)
+            #     # logger.info(f"Iteration {iter}: New global model saved to {global_model_path}")
+            # else:
+            #     print("模型平均失败，跳过本轮全局模型更新。", file=f)
+            #     # logger.error(f"Iteration {iter}: Model averaging failed.")
 
         from metrics_logger import merge_iterations
         metrics_dir = os.path.join(config.get('log_dir'), 'metrics')

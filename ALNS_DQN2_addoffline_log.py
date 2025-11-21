@@ -626,6 +626,51 @@ class ALNS:
 
         return remove_list
 
+    # 在 ALNS 类中添加
+    def structural_time_window_destroy(self, fragment, num):
+        """
+        【回归本质算子】结构化时间窗口破坏
+        不按照数量num删除，而是按照时间窗口长度删除。
+        这能彻底打乱某个拥堵时间段的结构，强迫修复算子重建。
+        """
+        if not fragment.currentSol.Arc_list_id:
+            return []
+
+        # 1. 确定当前解的时间跨度
+        all_arcs = [self.model.Arc_list[i] for i in fragment.currentSol.Arc_list_id]
+        min_st = min(arc.link_st for arc in all_arcs)
+        max_et = max(arc.link_et for arc in all_arcs)
+
+        if max_et <= min_st:
+            return self.random_destroy(fragment, num)
+
+        # 2. 随机选择一个破坏的起始点
+        # destroy_duration = 1800  # 例如：30分钟的“真空期”
+        # 动态计算破坏时长：大概破坏掉 num 个弧段所需的平均时长
+        avg_duration = (max_et - min_st) / max(1, len(all_arcs))
+        destroy_duration = avg_duration * num * 1.5  # 稍微扩大一点范围以保证破坏力
+
+        start_time = random.uniform(min_st, max_et - destroy_duration * 0.5)
+        end_time = start_time + destroy_duration
+
+        # 3. 移除该窗口内所有有交集的弧段
+        remove_list = []
+        for arc_id in fragment.currentSol.Arc_list_id:
+            # 跳过 tabu (如果非常想破坏结构，甚至可以忽略tabu，但为了稳定性暂时保留)
+            if self.tabu_destroy[arc_id] > 0:
+                continue
+
+            arc = self.model.Arc_list[arc_id]
+            # 只要和窗口有重叠就删除
+            if not (arc.link_et < start_time or arc.link_st > end_time):
+                remove_list.append(arc_id)
+
+        # 如果没删掉东西（窗口选到了空闲期），回退到随机删除
+        if not remove_list:
+            return self.random_destroy(fragment, num)
+
+        return remove_list
+
     def boundary_coordinated_insert(self, d_arc_list_id, rest_arc_list_id, lt):
         """边界协调插入：插入时主动考虑跨片段协调"""
         not_tabu_insert = [arc for arc in rest_arc_list_id if self.tabu_insert[arc] == 0]
@@ -793,7 +838,8 @@ class ALNS:
         elif destroy_id == 3:
             remove_list = self.conf_destroy(fragment, num)
         elif destroy_id == 4:
-            remove_list = self.cont_time_destroy(fragment, num)
+            # remove_list = self.cont_time_destroy(fragment, num)
+            remove_list = self.structural_time_window_destroy(fragment, num)
         # #########边界
         elif destroy_id == 5:
             remove_list = self.boundary_preserving_destroy(fragment, num)
@@ -1169,70 +1215,230 @@ class ALNS:
         )
         return total_boundary_weight / len(solution.Arc_list_id)
 
+    # def calculate_reward(self, prev_solution, new_solution, confn, conft):
+    #     """优化版本的奖励计算"""
+    #     # 链接时间改进
+    #     link_time_diff = new_solution.link_time - prev_solution.link_time
+    #
+    #     # print("冲突",confn,conft)
+    #     #
+    #     # # 冲突惩罚
+    #     # conflict_penalty = confn * 0.55 + conft * 0.00015
+    #
+    #     # 归一化处理
+    #     reward1_min, reward1_max = -2000, 500
+    #     reward2_min, reward2_max = 0, 50
+    #     reward3_min, reward3_max = 0, 3000
+    #
+    #     link_time_diff_norm = max(min(link_time_diff, reward1_max), reward1_min)
+    #     confn_norm = max(min(confn, reward2_max), reward2_min)
+    #     conft_norm = max(min(conft, reward3_max), reward3_min)
+    #
+    #     reward1_normalized = (link_time_diff_norm - reward1_min) / (reward1_max - reward1_min)
+    #     reward2_normalized = (confn_norm - reward2_min) / (reward2_max - reward2_min)
+    #     reward3_normalized = (conft_norm - reward3_min) / (reward3_max - reward3_min)
+    #
+    #     reward1_normalized = 2 * reward1_normalized - 1
+    #
+    #     # 权重
+    #     weight1 = config.get('weight1') * 1.1
+    #     weight2 = config.get('weight2')
+    #     weight3 = config.get('weight3')
+    #
+    #     # 多样性和效率奖励
+    #     solution_diversity = len(set(new_solution.Arc_list_id) - set(prev_solution.Arc_list_id)) / max(1,
+    #                                                                                                    len(new_solution.Arc_list_id))
+    #     diversity_weight = 10
+    #
+    #     efficiency = new_solution.link_time / max(1, len(new_solution.Arc_list_id))
+    #     prev_efficiency = prev_solution.link_time / max(1, len(prev_solution.Arc_list_id))
+    #     efficiency_improvement = (efficiency - prev_efficiency) / max(1, prev_efficiency)
+    #     efficiency_weight = 100
+    #
+    #     # 【优化】边界风险惩罚 - 复用缓存计算
+    #     prev_boundary_risk = self._calculate_solution_boundary_risk(prev_solution)
+    #     new_boundary_risk = self._calculate_solution_boundary_risk(new_solution)
+    #     boundary_risk_penalty = (new_boundary_risk - prev_boundary_risk) * 1000
+    #
+    #     # print('+:',reward1_normalized,'-:',reward2_normalized,'-:',reward3_normalized,'+:',solution_diversity,'+:',efficiency_improvement,'-:',boundary_risk_penalty)
+    #
+    #     # 计算总奖励
+    #     total_reward = (weight1 * reward1_normalized -
+    #                     weight2 * reward2_normalized -
+    #                     weight3 * reward3_normalized +
+    #                     diversity_weight * solution_diversity +
+    #                     efficiency_weight * efficiency_improvement -
+    #                     boundary_risk_penalty)
+    #
+    #     self.reward_components={
+    #             "link_time": weight1 * reward1_normalized,
+    #             "conflict": -weight2 * reward2_normalized - weight3 * reward3_normalized,
+    #             "diversity": diversity_weight * solution_diversity,
+    #             "efficiency": efficiency_weight * efficiency_improvement,
+    #             "boundary": -boundary_risk_penalty
+    #         }
+    #
+    #     return total_reward
+
     def calculate_reward(self, prev_solution, new_solution, confn, conft):
-        """优化版本的奖励计算"""
-        # 链接时间改进
-        link_time_diff = new_solution.link_time - prev_solution.link_time
+        """
+        重新设计的奖励函数 - 重点解决边界风险主导问题
+        核心策略：相对改进 + 分层奖励 + 边界风险阈值化
+        """
 
-        # print("冲突",confn,conft)
+        # # === 1. 主要目标：链接时间相对改进 ===
+        # lt_improvement_ratio = (new_solution.link_time - prev_solution.link_time) / prev_solution.link_time
+        # # 对改进进行非线性变换，鼓励小的正向改进
+        # if lt_improvement_ratio > 0:
+        #     # 正向改进：使用对数变换，鼓励小的改进
+        #     lt_reward = np.log1p(lt_improvement_ratio * 100)  # log(1 + x)
+        # else:
+        #     # 负向变化：线性惩罚
+        #     lt_reward = lt_improvement_ratio * 2
+        # === 1. 主要目标：链接时间绝对改进（放大信号） ===
+        lt_improvement = new_solution.link_time - prev_solution.link_time
+        # 使用绝对改进而不是相对改进，避免小分母问题
+        if lt_improvement > 0:
+            # 正向改进：使用缩放的对数奖励
+            lt_reward = np.log1p(lt_improvement / 100) * 2  # 放大信号
+        else:
+            # 负向变化：线性惩罚，但适度
+            lt_reward = lt_improvement / 500  # 比原来放大
+
+        # === 2. 冲突惩罚 - 基于相对规模 ===
+        conflict_density = confn / len(new_solution.Arc_list_id)
+        # 冲突惩罚：只有当冲突密度超过阈值时才惩罚
+        conflict_penalty = 0
+        if conflict_density > 0.05:  # 10%的弧段有冲突才开始惩罚
+            conflict_penalty = conflict_density * 3
+
+        # # === 3. 边界风险 - 关键改进 ===
+        # prev_boundary_risk = self._calculate_solution_boundary_risk(prev_solution)
+        # new_boundary_risk = self._calculate_solution_boundary_risk(new_solution)
+        # boundary_risk_change = new_boundary_risk - prev_boundary_risk
         #
-        # # 冲突惩罚
-        # conflict_penalty = confn * 0.55 + conft * 0.00015
+        # # 边界风险阈值化：只有显著变化才惩罚/奖励
+        # boundary_effect = 0
+        # if abs(boundary_risk_change) > 0.02:  # 5%的变化阈值
+        #     boundary_effect = boundary_risk_change * 5  # 适度放大，但不主导
 
-        # 归一化处理
-        reward1_min, reward1_max = -2000, 500
-        reward2_min, reward2_max = 0, 50
-        reward3_min, reward3_max = 0, 3000
+        # === 4. 分层奖励策略 ===
+        base_reward = lt_reward - conflict_penalty #- boundary_effect
 
-        link_time_diff_norm = max(min(link_time_diff, reward1_max), reward1_min)
-        confn_norm = max(min(confn, reward2_max), reward2_min)
-        conft_norm = max(min(conft, reward3_max), reward3_min)
+        # 放宽帕累托改进条件
+        lt_improved = lt_improvement > 0
+        #boundary_improved = boundary_risk_change <= 0
+        low_conflict = confn <= max(1, len(new_solution.Arc_list_id) * 0.1)  # 10%以内
+        # 额外奖励层：帕累托改进
+        bonus_reward = 0
+        if lt_improved  and  low_conflict:
+            bonus_reward = 1.0 + min(lt_improvement / 1000, 1.0)  # 基础奖励+改进比例奖励
 
-        reward1_normalized = (link_time_diff_norm - reward1_min) / (reward1_max - reward1_min)
-        reward2_normalized = (confn_norm - reward2_min) / (reward2_max - reward2_min)
-        reward3_normalized = (conft_norm - reward3_min) / (reward3_max - reward3_min)
+        # 可行性奖励：无冲突解
+        if confn == 0 :
+            bonus_reward += 0.3
 
-        reward1_normalized = 2 * reward1_normalized - 1
+        total_reward = base_reward + bonus_reward
 
-        # 权重
-        weight1 = config.get('weight1') * 1.1
-        weight2 = config.get('weight2')
-        weight3 = config.get('weight3')
+        # === 5. 最终限制，确保数值稳定 ===
+        total_reward = np.clip(total_reward, -3.0, 4.0)
 
-        # 多样性和效率奖励
-        solution_diversity = len(set(new_solution.Arc_list_id) - set(prev_solution.Arc_list_id)) / max(1,
-                                                                                                       len(new_solution.Arc_list_id))
-        diversity_weight = 10
+        # === 6. 记录分析数据 ===
+        self.reward_components = {
+            "link_time": lt_reward,
+            "conflict_penalty": -conflict_penalty,
+            # "boundary_effect": -boundary_effect,
+            "bonus_reward": bonus_reward,
+            "raw_lt_improvement": lt_improvement,
+            "raw_conflict_density": conflict_density,
+            # "raw_boundary_change": boundary_risk_change,
+            "total_reward": total_reward
+        }
 
-        efficiency = new_solution.link_time / max(1, len(new_solution.Arc_list_id))
-        prev_efficiency = prev_solution.link_time / max(1, len(prev_solution.Arc_list_id))
-        efficiency_improvement = (efficiency - prev_efficiency) / max(1, prev_efficiency)
-        efficiency_weight = 100
-
-        # 【优化】边界风险惩罚 - 复用缓存计算
-        prev_boundary_risk = self._calculate_solution_boundary_risk(prev_solution)
-        new_boundary_risk = self._calculate_solution_boundary_risk(new_solution)
-        boundary_risk_penalty = (new_boundary_risk - prev_boundary_risk) * 1000
-
-        # print('+:',reward1_normalized,'-:',reward2_normalized,'-:',reward3_normalized,'+:',solution_diversity,'+:',efficiency_improvement,'-:',boundary_risk_penalty)
-
-        # 计算总奖励
-        total_reward = (weight1 * reward1_normalized -
-                        weight2 * reward2_normalized -
-                        weight3 * reward3_normalized +
-                        diversity_weight * solution_diversity +
-                        efficiency_weight * efficiency_improvement -
-                        boundary_risk_penalty)
-
-        self.reward_components={
-                "link_time": weight1 * reward1_normalized,
-                "conflict": -weight2 * reward2_normalized - weight3 * reward3_normalized,
-                "diversity": diversity_weight * solution_diversity,
-                "efficiency": efficiency_weight * efficiency_improvement,
-                "boundary": -boundary_risk_penalty
-            }
+        # # 调试输出
+        # if hasattr(self, 'debug_counter'):
+        #     self.debug_counter += 1
+        #     if self.debug_counter % 5 == 0:
+        #         print(f"Reward Breakdown: LT={lt_reward:.3f}, "
+        #               f"Conflict={-conflict_penalty:.3f}, "
+        #               # f"Boundary={-boundary_effect:.3f}, "
+        #               f"Bonus={bonus_reward:.3f}, "
+        #               f"Total={total_reward:.3f}")
+        # else:
+        #     self.debug_counter = 1
 
         return total_reward
+
+    # def calculate_reward(self, prev_solution, new_solution, confn, conft):
+    #     """
+    #     简化版奖励函数 - 移除边界风险项
+    #     专注于：链接时间改进 + 冲突惩罚 + 帕累托奖励
+    #     """
+    #
+    #     # === 1. 主要目标：链接时间绝对改进 ===
+    #     lt_improvement = new_solution.link_time - prev_solution.link_time
+    #
+    #     # 使用分段奖励函数，放大有效信号
+    #     if lt_improvement > 1000:  # 大改进
+    #         lt_reward = 2.0 + min((lt_improvement - 1000) / 5000, 1.0)  # 最大3.0
+    #     elif lt_improvement > 100:  # 中等改进
+    #         lt_reward = 1.0 + (lt_improvement - 100) / 1000
+    #     elif lt_improvement > 0:  # 小改进
+    #         lt_reward = lt_improvement / 100
+    #     elif lt_improvement > -500:  # 小恶化
+    #         lt_reward = lt_improvement / 250
+    #     else:  # 大恶化
+    #         lt_reward = -2.0
+    #
+    #     # === 2. 冲突惩罚 - 保持现有逻辑 ===
+    #     conflict_penalty = 0
+    #     if len(new_solution.Arc_list_id) > 0:
+    #         conflict_density = confn / len(new_solution.Arc_list_id)
+    #         if conflict_density > 0.05:  # 5%阈值
+    #             conflict_penalty = conflict_density * 3
+    #
+    #     # === 3. 帕累托改进奖励 ===
+    #     bonus_reward = 0
+    #     lt_improved = lt_improvement > 0
+    #     low_conflict = confn <= max(1, len(new_solution.Arc_list_id) * 0.1)  # 10%以内
+    #
+    #     if lt_improved and low_conflict:
+    #         # 基础奖励 + 改进比例奖励
+    #         bonus_reward = 1.0 + min(lt_improvement / 1000, 1.0)
+    #
+    #     # 可行性奖励：完全无冲突
+    #     if confn == 0:
+    #         bonus_reward += 0.5
+    #
+    #     # === 4. 计算总奖励 ===
+    #     total_reward = lt_reward - conflict_penalty + bonus_reward
+    #
+    #     # 最终限制
+    #     total_reward = np.clip(total_reward, -3.0, 4.0)
+    #
+    #     # === 5. 记录分析数据 ===
+    #     self.reward_components = {
+    #         "link_time": lt_reward,
+    #         "conflict_penalty": -conflict_penalty,
+    #         "bonus_reward": bonus_reward,
+    #         "raw_lt_improvement": lt_improvement,
+    #         "raw_conflicts": confn,
+    #         "total_reward": total_reward
+    #     }
+    #
+    #     # 调试输出
+    #     if hasattr(self, 'debug_counter'):
+    #         self.debug_counter += 1
+    #         if self.debug_counter % 50 == 0:
+    #             print(f"Simplified Reward: LT={lt_reward:.3f}, "
+    #                   f"Conflict={-conflict_penalty:.3f}, "
+    #                   f"Bonus={bonus_reward:.3f}, "
+    #                   f"Total={total_reward:.3f}")
+    #     else:
+    #         self.debug_counter = 1
+    #
+    #     return total_reward
+
 
     def _check_arc_against_blackboard(self, arc_id):
         """
@@ -1457,7 +1663,7 @@ class ALNS:
 
         for ep in range(self.epochs):
             for i in range(self.q):
-                if not LAHC:
+                if 1:
                     # 需要基于一种判定后期启动LAHC
                     #
                     # 获取当前解的状态

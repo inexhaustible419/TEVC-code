@@ -58,7 +58,6 @@ def use_fp(f_dict, mode):
         for v in station_split.values():
             v.sort(key=lambda x: safe_get_arc(x).link_time if safe_get_arc(x) else 0)
 
-
         return station_split
 
     # 原有逻辑，但使用安全访问
@@ -526,10 +525,14 @@ def improved_alns_worker_with_corrected_model(serializable_model, elite_sol, f_n
             if enhanced_sol.link_time > best_sol.link_time :
                 initial_sol_ls.append(enhanced_sol)
                 print(f"Fragment {f_num} it_num {num} - accepted improved solution: {enhanced_sol.link_time}>{best_sol.link_time}")
+                if agent.epsilon < 0.5:
+                    agent.epsilon = 0.5
             enhanced_sol = IP_cons_sol(mode, fp_ls, f_num)
             if enhanced_sol.link_time > best_sol.link_time :
                 initial_sol_ls.append(enhanced_sol)
                 print(f"Fragment {f_num} it_num {num} - accepted improved solution: {enhanced_sol.link_time}>{best_sol.link_time}")
+                if agent.epsilon < 0.5:
+                    agent.epsilon = 0.5
 
             # 按link_time降序排序，保留最优解
             initial_sol_ls = sorted(initial_sol_ls, key=lambda x: x.link_time, reverse=True)

@@ -1199,7 +1199,7 @@ class AgentVisualizer:
                      fontsize=16, fontweight='bold')
 
         # 确保窗口大小在合理范围内
-        window = min(50, len(self.steps_df) // 10) if len(self.steps_df) > 10 else 1
+        window = min(1, len(self.steps_df) // 10) if len(self.steps_df) > 10 else 1
 
         # (1) 总奖励滑动平均
         ax = axes[0]
@@ -1217,15 +1217,17 @@ class AgentVisualizer:
         # 这是我们新的奖励分量键名
         reward_components = [
             'reward_link_time',
-            'reward_improvement',
+            "conflict_penalty",
             # 'reward_structure',
-            'reward_boundary'
+            # 'reward_boundary',
+            "bonus_reward"
         ]
         labels = [
             'Link Time (Main Obj)',
             'Conflict Improvement',
             # 'Structure (Efficiency/Diversity)',
-            'Boundary Penalty'
+            # 'Boundary Penalty'
+            'Bonus Reward'
         ]
 
         for comp, label in zip(reward_components, labels):
@@ -1366,8 +1368,8 @@ def main():
 
 if __name__ == '__main__':
     # 示例：直接使用
-    visualizer = AgentVisualizer('runs/20251116_210507_set_time_3600_data_C1_fragments_8/rep_0/metrics/fragment_1_complete.json',
-                                 'runs/20251116_210507_set_time_3600_data_C1_fragments_8/rep_0/'+'visualization_output')
+    visualizer = AgentVisualizer('runs/vision/增1算子改reward2/metrics/fragment_0_complete.json',
+                                 'runs/vision/增1算子改reward2/'+'visualization_output')
 
     visualizer.generate_all_plots()
     visualizer.export_to_excel()

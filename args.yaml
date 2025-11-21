@@ -24,7 +24,7 @@ gamma: 0.99
 #high_quality_threshold: 1.0
 
 learning_rate: 0.001
-log_dir: runs/vision/测试周期内最后一轮启动LAHC3
+log_dir: runs/vision/增1算子改reward2
 #phi: 0.95
 #process_timeout: 600
 #barrier_timeout: 300

@@ -72,30 +72,30 @@ class AgentVisualizer:
         # 1. 学习过程总览
         self.plot_training_overview()
 
-        # 2. 算子效果分析
-        self.plot_operator_analysis()
-
-        # 3. Q值深度分析
-        self.plot_q_value_analysis()
+        # # 2. 算子效果分析
+        # self.plot_operator_analysis()
+        #
+        # # 3. Q值深度分析
+        # self.plot_q_value_analysis()
 
         # 4. 探索vs利用
         self.plot_exploration_exploitation()
 
-        # 5. 收敛分析
-        self.plot_convergence_analysis()
-
+        # # 5. 收敛分析
+        # self.plot_convergence_analysis()
+        #
         # 6. 冲突演化
         self.plot_conflict_evolution()
-
-        # 7. 算子热力图
-        self.plot_operator_heatmaps()
-
-        # 8. 综合仪表盘
-        self.plot_dashboard()
-
-        # --- 【新增】调用新的可视化函数 ---
-        # 9. 状态演化
-        self.plot_state_evolution()
+        #
+        # # 7. 算子热力图
+        # self.plot_operator_heatmaps()
+        #
+        # # 8. 综合仪表盘
+        # self.plot_dashboard()
+        #
+        # # --- 【新增】调用新的可视化函数 ---
+        # # 9. 状态演化
+        # self.plot_state_evolution()
 
         # 10. 奖励演化
         self.plot_reward_evolution()
@@ -103,7 +103,7 @@ class AgentVisualizer:
         # 11. TD-Error演化
         self.plot_td_error_evolution()
 
-        self.plot_boundary_conflict_evolution()
+        # self.plot_boundary_conflict_evolution()
 
         print("\n" + "=" * 60)
         print(f"All visualizations saved to {self.output_dir}")
@@ -1368,8 +1368,8 @@ def main():
 
 if __name__ == '__main__':
     # 示例：直接使用
-    visualizer = AgentVisualizer('runs/vision/增1算子改reward2/metrics/fragment_0_complete.json',
-                                 'runs/vision/增1算子改reward2/'+'visualization_output')
+    visualizer = AgentVisualizer('runs/20251122_115214_set_time_3600_data_C1_fragments_6/rep_0/metrics/fragment_1_complete.json',
+                                 'runs/20251122_115214_set_time_3600_data_C1_fragments_6/rep_0/'+'visualization_output')
 
     visualizer.generate_all_plots()
     visualizer.export_to_excel()

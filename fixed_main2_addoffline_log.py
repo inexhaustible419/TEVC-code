@@ -505,13 +505,10 @@ def improved_alns_worker_with_corrected_model(serializable_model, elite_sol, f_n
     all_elite_sol = {f_num: {} for f_num in range(len(mode.fragment_list))}
     initial_sol_ls = initial_sol[f_num]
     for num in range(it_num):
-        if num == it_num-1:
-            LAHC = True
-        else:
-            LAHC = False
-        # LAHC = False
         # print(f"Fragment {f_num} - Continuous it_num {num+1}/{it_num}")
-
+        if num % 2==0:
+            if agent.epsilon < 0.5:
+                agent.epsilon = 0.5
         # 1. 基于累积的精英解生成更好的初始解
         if num > 0:
             initial_sol_ls.append(best_sol)
@@ -525,14 +522,14 @@ def improved_alns_worker_with_corrected_model(serializable_model, elite_sol, f_n
             if enhanced_sol.link_time > best_sol.link_time :
                 initial_sol_ls.append(enhanced_sol)
                 print(f"Fragment {f_num} it_num {num} - accepted improved solution: {enhanced_sol.link_time}>{best_sol.link_time}")
-                if agent.epsilon < 0.5:
-                    agent.epsilon = 0.5
+                # if agent.epsilon < 0.5:
+                #     agent.epsilon = 0.5
             enhanced_sol = IP_cons_sol(mode, fp_ls, f_num)
             if enhanced_sol.link_time > best_sol.link_time :
                 initial_sol_ls.append(enhanced_sol)
                 print(f"Fragment {f_num} it_num {num} - accepted improved solution: {enhanced_sol.link_time}>{best_sol.link_time}")
-                if agent.epsilon < 0.5:
-                    agent.epsilon = 0.5
+                # if agent.epsilon < 0.5:
+                #     agent.epsilon = 0.5
 
             # 按link_time降序排序，保留最优解
             initial_sol_ls = sorted(initial_sol_ls, key=lambda x: x.link_time, reverse=True)
@@ -568,7 +565,7 @@ def improved_alns_worker_with_corrected_model(serializable_model, elite_sol, f_n
         # 2. 运行ALNS算法（使用持续的agent，保持训练状态）
         # print(f'------------------------------2ND STEP---------------------------------')
         # print(f"Fragment {f_num}: Running ALNS with continuous DQN agent (it_num {num})")
-        result = alns.run(t1, start_time, 0, f_num, initial_sol_ls,LAHC=LAHC)
+        result = alns.run(t1, start_time, 0, f_num, initial_sol_ls)
         elite_sol_result, best_sol, init, f_num_result, may_conf = result
         all_elite_sol[f_num][init] = elite_sol_result
 

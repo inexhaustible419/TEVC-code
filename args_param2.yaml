@@ -26,6 +26,8 @@ fedprox_mu: [0.01]
 
 gamma: [0.99]
 
+#conda activate cplexpy37
+#python run_experiments_fix_error2.py --param-file args_param2.yaml --repetitions 1
 
 
 #phi: [0.95]

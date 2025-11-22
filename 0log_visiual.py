@@ -1368,7 +1368,7 @@ def main():
 
 if __name__ == '__main__':
     # 示例：直接使用
-    visualizer = AgentVisualizer('runs/20251122_115214_set_time_3600_data_C1_fragments_6/rep_0/metrics/fragment_1_complete.json',
+    visualizer = AgentVisualizer('runs/20251122_115214_set_time_3600_data_C1_fragments_6/rep_0/metrics/fragment_2_complete.json',
                                  'runs/20251122_115214_set_time_3600_data_C1_fragments_6/rep_0/'+'visualization_output')
 
     visualizer.generate_all_plots()

@@ -1637,7 +1637,7 @@ class ALNS:
         else:
             if init > len(sol_ls):
                 print(1)
-            fragment.currentSol = copy.copy(sol_ls[init])
+            fragment.currentSol = copy.deepcopy(sol_ls[init])
 
         fragment.bestSol = copy.deepcopy(fragment.currentSol)
         fragment.bestSol.Arc_list_id.sort(key=lambda x: self.model.Arc_list[x].link_st)

@@ -511,7 +511,7 @@ def improved_alns_worker_with_corrected_model(serializable_model, elite_sol, f_n
                 agent.epsilon = 0.5
         # 1. 基于累积的精英解生成更好的初始解
         if num > 0:
-            initial_sol_ls.append(best_sol)
+            initial_sol_ls.append(copy.deepcopy(best_sol))
             # print("挖掘前执行的", num, ' ', iter)
         if num > 0 and num <= 2 : #and iter == 0
             # print("进行了挖掘",num,' ',iter)
